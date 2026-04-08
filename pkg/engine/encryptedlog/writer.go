@@ -60,24 +60,24 @@ func NewWriter(
 		return nil, fmt.Errorf("encryptedlog: encrypting session key: %w", err)
 	}
 
-	encryptedKeyBytes := []byte(encryptedKey)
-	if len(encryptedKeyBytes) > 65535 {
-		return nil, fmt.Errorf("encryptedlog: encrypted key too large (%d bytes)", len(encryptedKeyBytes))
+	return NewWriterWithKey(w, sessionKey[:], []byte(encryptedKey))
+}
+
+// NewWriterWithKey creates a Writer that encrypts log data to w using
+// a pre-existing session key. The headerData is written as-is into the
+// PLOG header's key field (e.g. a session ID that the reader can use to
+// look up the actual key).
+func NewWriterWithKey(w io.Writer, sessionKey []byte, headerData []byte) (*Writer, error) {
+	if len(sessionKey) != keySize {
+		return nil, fmt.Errorf("encryptedlog: invalid session key size %d, expected %d", len(sessionKey), keySize)
 	}
 
-	// Write the PLOG header: magic + version + key length + key.
-	header := make([]byte, 0, len(Magic)+1+2+len(encryptedKeyBytes))
-	header = append(header, Magic...)
-	header = append(header, Version)
-	//nolint:gosec // bounded by 65535 check above
-	header = binary.BigEndian.AppendUint16(header, uint16(len(encryptedKeyBytes)))
-	header = append(header, encryptedKeyBytes...)
-	if _, err := w.Write(header); err != nil {
+	if err := WriteHeader(w, headerData); err != nil {
 		return nil, fmt.Errorf("encryptedlog: writing header: %w", err)
 	}
 
 	// Set up AES-256-GCM from the session key.
-	block, err := aes.NewCipher(sessionKey[:])
+	block, err := aes.NewCipher(sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("encryptedlog: creating cipher: %w", err)
 	}

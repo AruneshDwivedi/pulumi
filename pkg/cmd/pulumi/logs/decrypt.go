@@ -106,7 +106,10 @@ func newDecryptCmd(ws pkgWorkspace.Context) *cobra.Command {
 			}
 			defer gz.Close()
 
-			return formatLogRecords(gz, out)
+			if _, err := io.Copy(out, gz); err != nil { //nolint:gosec // user's own log file
+				return fmt.Errorf("decompressing log: %w", err)
+			}
+			return nil
 		},
 	}
 
