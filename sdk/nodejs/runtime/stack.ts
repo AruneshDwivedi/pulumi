@@ -78,7 +78,6 @@ export class Stack extends ComponentResource<Inputs> {
 
         let outputs: Inputs | undefined;
         try {
-
             const inputs = await args.init();
             outputs = massage(undefined, inputs, []);
 
