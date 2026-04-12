@@ -1,0 +1,4 @@
+changes:
+- type: feat
+  scope: sdk/python
+  description: The current exports map is now available for unit testing through `get_current_export_map`

@@ -22,6 +22,8 @@ resources.
 # The instrumentation works by monkey-patching grpc, which must happen before it's loaded.
 from .runtime import _instrumentation  # noqa: F401 - imported for side effects
 
+from .runtime.stack import get_current_export_map
+
 # Make all module members inside of this package available as package members.
 from .asset import (
     Asset,
@@ -182,6 +184,7 @@ __all__ = [
     "ResourceOptions",
     "create_urn",
     "export",
+    "get_current_export_map",
     "ROOT_STACK_RESOURCE",
     "ResourceTransformation",
     "ResourceTransformationArgs",
