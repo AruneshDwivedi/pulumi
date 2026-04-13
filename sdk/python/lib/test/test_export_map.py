@@ -21,7 +21,7 @@ Part of https://github.com/pulumi/pulumi/issues/6113
 from copy import deepcopy
 
 from pulumi.runtime.stack import Stack
-from pulumi.runtime import settings
+from pulumi.runtime import settings, mocks
 import pulumi
 
 
@@ -33,9 +33,27 @@ class MyMocks(pulumi.runtime.Mocks):
         raise Exception("call")
 
 
-def test_get_current_export_map():
-    settings.reset_options()
+def _setup_mocks():
+    """Reset options with proper project/stack names and configure a mock
+    monitor so that Stack URNs are well-formed, without auto-creating a
+    root Stack (which ``set_mocks`` would do)."""
     old_settings = deepcopy(settings.SETTINGS)
+    mm = MyMocks()
+    settings.reset_options(project="test", stack="test")
+    settings.configure(
+        mocks.MockSettings(
+            monitor=mocks.MockMonitor(mm),
+            engine=mocks.MockEngine(None),
+            project="test",
+            stack="test",
+            dry_run=False,
+        )
+    )
+    return old_settings
+
+
+def test_get_current_export_map():
+    old_settings = _setup_mocks()
 
     def program():
         pulumi.export("fruit", "banana")
@@ -51,8 +69,7 @@ def test_get_current_export_map():
 
 
 def test_get_current_export_map_returns_copy():
-    settings.reset_options()
-    old_settings = deepcopy(settings.SETTINGS)
+    old_settings = _setup_mocks()
 
     def program():
         pulumi.export("key", "value")
@@ -70,8 +87,7 @@ def test_get_current_export_map_returns_copy():
 
 
 def test_get_current_export_map_empty():
-    settings.reset_options()
-    old_settings = deepcopy(settings.SETTINGS)
+    old_settings = _setup_mocks()
 
     def program():
         pass
