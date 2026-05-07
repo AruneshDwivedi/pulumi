@@ -38,6 +38,7 @@ type Snapshot struct {
 	Resources         []*resource.State    // fetches all resources and their associated states.
 	PendingOperations []resource.Operation // all currently pending resource operations.
 	Metadata          SnapshotMetadata     // metadata associated with the snapshot.
+	Snippets          []resource.Snippet   // any PCL snippets associated with the snapshot.
 }
 
 // SnapshotMetadata contains metadata about a snapshot.
