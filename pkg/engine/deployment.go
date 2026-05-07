@@ -237,13 +237,13 @@ func newDeployment(
 		return nil, err
 	}
 
-	// Now create sources for _any_ snippets in the snapshot and muxer them with the main source.
-	if len(target.Snapshot.Snippets) > 0 {
+	// Now create sources for _any_ snippets in the snapshot and mux them with the main source.
+	if target.Snapshot != nil && len(target.Snapshot.Snippets) > 0 {
 		snippetSources := make([]deploy.Source, len(target.Snapshot.Snippets))
 		for i, snippet := range target.Snapshot.Snippets {
 			snippetSources[i] = deploy.NewSnippetSource(snippet)
 		}
-		source = deploy.MuxSource(append([]deploy.Source{source}, snippetSources...)...)
+		source = deploy.NewMuxSource(append([]deploy.Source{source}, snippetSources...)...)
 	}
 
 	deplOpts := &deploy.Options{

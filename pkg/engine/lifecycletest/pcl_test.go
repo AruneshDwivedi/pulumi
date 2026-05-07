@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy/deploytest"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 )
 
 // TestPclSnippet checks that we can run a PCL snippet via an engine update.
@@ -91,6 +92,6 @@ func TestPclSnippet(t *testing.T) {
 
 	// Check the resource was created.
 	require.Len(t, snap.Resources, 2)
-	require.Equal(t, "pulumi:providers:pkgA", snap.Resources[0].Type)
-	require.Equal(t, "pkgA:index:res", snap.Resources[1].Type)
+	require.Equal(t, tokens.Type("pulumi:providers:pkgA"), snap.Resources[0].Type)
+	require.Equal(t, tokens.Type("pkgA:index:res"), snap.Resources[1].Type)
 }

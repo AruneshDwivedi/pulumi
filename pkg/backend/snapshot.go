@@ -752,7 +752,11 @@ func (sm *SnapshotManager) Snap() *deploy.Snapshot {
 	}
 
 	manifest.Magic = manifest.NewMagic()
-	return deploy.NewSnapshot(manifest, secretsManager, resources, operations, metadata)
+	snap := deploy.NewSnapshot(manifest, secretsManager, resources, operations, metadata)
+	if sm.baseSnapshot != nil {
+		snap.Snippets = sm.baseSnapshot.Snippets
+	}
+	return snap
 }
 
 func (sm *SnapshotManager) Deployment() (apitype.TypedDeployment, error) {

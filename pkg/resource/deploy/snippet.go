@@ -17,19 +17,35 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/pulumi/pulumi/pkg/v3/pcl"
+	sdkproviders "github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 )
 
+type snippetState int
+
+const (
+	// snippetStateStart is the initial state: the default provider has not been registered yet.
+	snippetStateStart snippetState = iota
+	// snippetStateAwaitProvider is the state after the default provider registration event has been
+	// emitted; Next() blocks until the provider registration completes.
+	snippetStateAwaitProvider
+	// snippetStateDone is the terminal state after the resource event has been emitted.
+	snippetStateDone
+)
+
 type snippet struct {
-	snippet *resource.Snippet
-	project tokens.PackageName
+	snippet      *resource.Snippet
+	state        snippetState
+	providerDone chan *RegisterResult
 }
 
-// Snippet represents a snippet of PCL that should be associated with a stack. The engine reruns these in deployments.
-func NewSnippet(project tokens.PackageName, args *resource.Snippet) Source {
-	return &snippet{project: project, snippet: args}
+// NewSnippetSource creates a Source that registers a single PCL resource snippet.
+func NewSnippetSource(s resource.Snippet) Source {
+	return &snippet{snippet: &s}
 }
 
 func (s *snippet) Close() error {
@@ -37,7 +53,7 @@ func (s *snippet) Close() error {
 }
 
 func (s *snippet) Project() tokens.PackageName {
-	return s.project
+	return ""
 }
 
 func (s *snippet) Iterate(ctx context.Context, providers ProviderSource) (SourceIterator, error) {
@@ -48,30 +64,73 @@ func (s *snippet) Cancel(ctx context.Context) error {
 	return nil
 }
 
+// Next drives the snippet iterator through a two-step protocol:
+//
+//  1. First call: emits a default provider registration for the snippet's package and returns
+//     immediately. The done channel is stored so we can read the provider result later.
+//
+//  2. Second call: blocks until the provider registration completes, then emits the resource
+//     registration event with the provider reference filled in.
+//
+//  3. Third call (and beyond): returns nil to signal that the iterator is exhausted.
 func (s *snippet) Next() (SourceEvent, error) {
-	goal := &resource.Goal{
-		Type: tokens.Type(s.snippet.Type),
-		Name: s.snippet.Name,
+	switch s.state {
+	case snippetStateStart:
+		pkg := tokens.Type(s.snippet.Type).Package()
+		s.providerDone = make(chan *RegisterResult)
+		s.state = snippetStateAwaitProvider
+		return &registerResourceEvent{
+			goal: &resource.Goal{
+				Type:       sdkproviders.MakeProviderType(pkg),
+				Name:       "default",
+				Custom:     true,
+				Properties: resource.PropertyMap{},
+			},
+			done: s.providerDone,
+		}, nil
+
+	case snippetStateAwaitProvider:
+		result := <-s.providerDone
+		s.state = snippetStateDone
+
+		ref, err := sdkproviders.NewReference(result.State.URN, result.State.ID)
+		if err != nil {
+			return nil, fmt.Errorf("building provider reference: %w", err)
+		}
+
+		props, diags := pcl.EvalBody(s.snippet.Code)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+
+		return &registerResourceEvent{
+			goal: &resource.Goal{
+				Type:       tokens.Type(s.snippet.Type),
+				Name:       s.snippet.Name,
+				Custom:     true,
+				Provider:   ref.String(),
+				Properties: props,
+			},
+			done: make(chan *RegisterResult, 1),
+		}, nil
+
+	default: // snippetStateDone
+		return nil, nil
 	}
-	return &registerResourceEvent{
-		goal: goal,
-	}, nil
 }
 
-// NewMuxSource creates a new source that muxes together the given sources. The resulting source will execute each of
-// the given sources in order, and aggregate their diagnostics and events. This is used to run PCL snippets in the
-// engine.
+// MuxSource creates a source that multiplexes the given sources, interleaving their events
+// and returning nil only when all sources are exhausted. This is used to run PCL snippets
+// alongside the main program source.
 func NewMuxSource(sources ...Source) Source {
-	// Assert that all the sources are for the same project
+	// Use the first non-empty project as the mux project.
 	var project tokens.PackageName
 	for _, source := range sources {
-		if project == "" {
-			project = source.Project()
-		} else if source.Project() != project {
-			panic("all sources must be for the same project")
+		if p := source.Project(); p != "" {
+			project = p
+			break
 		}
 	}
-
 	return &muxSource{sources: sources, project: project}
 }
 
@@ -107,12 +166,16 @@ func (m *muxSource) Iterate(ctx context.Context, providers ProviderSource) (Sour
 		}
 		iterators[i] = it
 	}
-
-	return &muxSourceIterator{iterators: iterators}, nil
+	return &muxSourceIterator{
+		iterators: iterators,
+		done:      make([]bool, len(iterators)),
+	}, nil
 }
 
 type muxSourceIterator struct {
 	iterators []SourceIterator
+	done      []bool
+	doneCount int
 	current   int
 }
 
@@ -131,12 +194,25 @@ func (m *muxSourceIterator) Cancel(ctx context.Context) error {
 }
 
 func (m *muxSourceIterator) Next() (SourceEvent, error) {
-	if m.current >= len(m.iterators) {
-		m.current = 0
+	for m.doneCount < len(m.iterators) {
+		if m.current >= len(m.iterators) {
+			m.current = 0
+		}
+		i := m.current
+		m.current++
+		if m.done[i] {
+			continue
+		}
+		event, err := m.iterators[i].Next()
+		if err != nil {
+			return nil, err
+		}
+		if event == nil {
+			m.done[i] = true
+			m.doneCount++
+			continue
+		}
+		return event, nil
 	}
-
-	i := m.current
-	m.current++
-
-	return m.iterators[i].Next()
+	return nil, nil
 }
