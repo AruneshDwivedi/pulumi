@@ -82,6 +82,8 @@ func (s *snippet) Cancel(ctx context.Context) error {
 //  3. Third call (and beyond): returns nil to signal that the iterator is exhausted.
 func (s *snippet) Next() (SourceEvent, error) {
 	switch s.state {
+	case snippetStateDone:
+		return nil, nil
 	case snippetStateStart:
 		pkg := tokens.Type(s.snippet.Type).Package()
 		s.providerDone = make(chan *RegisterResult)
@@ -169,10 +171,8 @@ func (s *snippet) Next() (SourceEvent, error) {
 			},
 			done: make(chan *RegisterResult, 1),
 		}, nil
-
-	default: // snippetStateDone
-		return nil, nil
 	}
+	panic(fmt.Sprintf("invalid snippet state: %v", s.state))
 }
 
 // MuxSource creates a source that multiplexes the given sources, interleaving their events

@@ -38,6 +38,20 @@ func TestPclSnippet(t *testing.T) {
 	loaders := []*deploytest.ProviderLoader{
 		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
 			return &deploytest.Provider{
+				GetSchemaF: func(ctx context.Context, gsr plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(`{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "propA": { "type": "boolean" }
+      },
+      "requiredInputs": ["propA"]
+    }
+  }
+}`)}, nil
+				},
 				CreateF: func(ctx context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
 					uuid, err := uuid.NewV4()
 					if err != nil {
@@ -60,7 +74,7 @@ func TestPclSnippet(t *testing.T) {
 		{
 			Name: "test-resource", Type: "pkgA:index:res",
 			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
-			Code:       ``,
+			Code:       `propA = true`,
 		},
 	}
 
@@ -92,12 +106,13 @@ func TestPclSnippet(t *testing.T) {
 	require.Len(t, snap.Snippets, 1)
 	require.Equal(t, `test-resource`, snap.Snippets[0].Name)
 	require.Equal(t, `pkgA:index:res`, snap.Snippets[0].Type)
-	require.Equal(t, `{}`, snap.Snippets[0].Code)
+	require.Equal(t, `propA = true`, snap.Snippets[0].Code)
 
 	// Check the resource was created.
 	require.Len(t, snap.Resources, 2)
 	require.Equal(t, tokens.Type("pulumi:providers:pkgA"), snap.Resources[0].Type)
 	require.Equal(t, tokens.Type("pkgA:index:res"), snap.Resources[1].Type)
+	require.Equal(t, resource.PropertyMap{"propA": resource.NewProperty(true)}, snap.Resources[1].Inputs)
 }
 
 // TestPclInvalidSnippet checks that an invalid snippet (i.e does not type check) returns an error.
@@ -169,7 +184,7 @@ func TestPclInvalidSnippet(t *testing.T) {
 
 	// Add a snippet to the snapshot and rerun the update to execute it.
 	snap.Snippets = snippets
-	snap, err = lt.TestOp(Update).RunStep(
+	_, err = lt.TestOp(Update).RunStep(
 		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
-	require.ErrorContains(t, err, "stuff")
+	require.ErrorContains(t, err, "Missing required input \"propB\"")
 }
