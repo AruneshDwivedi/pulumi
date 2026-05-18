@@ -18,11 +18,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/pulumi/pulumi/pkg/v3/pcl"
+	hclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	pclruntime "github.com/pulumi/pulumi/pkg/v3/pcl/runtime"
 	sdkproviders "github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 type snippetState int
@@ -98,7 +103,31 @@ func (s *snippet) Next() (SourceEvent, error) {
 			return nil, fmt.Errorf("building provider reference: %w", err)
 		}
 
-		props, diags := pcl.EvalBody(s.snippet.Code)
+		// Bind the snippet code
+		input := strings.NewReader(s.snippet.Code)
+		parser := hclsyntax.NewParser()
+		if err := parser.ParseFile(input, "<snippet>"); err != nil {
+			return nil, fmt.Errorf("parse input: %w", err)
+		}
+		if parser.Diagnostics.HasErrors() {
+			return nil, parser.Diagnostics
+		}
+		contract.Assertf(len(parser.Files) == 1, "Should be one PCL file")
+		file := parser.Files[0]
+
+		// Lookup the resource type in the provider schema and bind the snippet code to it.
+		var res *schema.Resource
+
+		attributes, resType, diags := pcl.BindResource(file, res)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+
+		evalCtx := pclruntime.NewEvalContext("", "", "", "", "", nil, nil, nil, nil, nil)
+		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
+		if poison != nil {
+			return nil, fmt.Errorf("snippet evaluation poisoned: %v", poison)
+		}
 		if diags.HasErrors() {
 			return nil, diags
 		}
