@@ -57,7 +57,11 @@ func TestPclSnippet(t *testing.T) {
 	}
 
 	snippets := []resource.Snippet{
-		{Name: "test-resource", Type: "pkgA:index:res", Code: `{}`},
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       ``,
+		},
 	}
 
 	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
@@ -138,7 +142,11 @@ func TestPclInvalidSnippet(t *testing.T) {
 
 	snippets := []resource.Snippet{
 		// only set one property
-		{Name: "test-resource", Type: "pkgA:index:res", Code: `propA = true`},
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
 	}
 
 	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {

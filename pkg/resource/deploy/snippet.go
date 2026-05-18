@@ -46,11 +46,13 @@ type snippet struct {
 	snippet      *resource.Snippet
 	state        snippetState
 	providerDone chan *RegisterResult
+
+	loader schema.ReferenceLoader
 }
 
 // NewSnippetSource creates a Source that registers a single PCL resource snippet.
-func NewSnippetSource(s resource.Snippet) Source {
-	return &snippet{snippet: &s}
+func NewSnippetSource(s resource.Snippet, loader schema.ReferenceLoader) Source {
+	return &snippet{snippet: &s, loader: loader}
 }
 
 func (s *snippet) Close() error {
@@ -116,7 +118,32 @@ func (s *snippet) Next() (SourceEvent, error) {
 		file := parser.Files[0]
 
 		// Lookup the resource type in the provider schema and bind the snippet code to it.
-		var res *schema.Resource
+		var parameterization *schema.ParameterizationDescriptor
+		if s.snippet.Descriptor.Parameterization != nil {
+			parameterization = &schema.ParameterizationDescriptor{
+				Name:    s.snippet.Descriptor.Parameterization.Name,
+				Version: s.snippet.Descriptor.Parameterization.Version,
+				Value:   s.snippet.Descriptor.Parameterization.Value,
+			}
+		}
+		descriptor := &schema.PackageDescriptor{
+			Name:             s.snippet.Descriptor.Name,
+			Version:          s.snippet.Descriptor.Version,
+			DownloadURL:      s.snippet.Descriptor.DownloadURL,
+			Parameterization: parameterization,
+		}
+
+		spec, err := s.loader.LoadPackageReferenceV2(context.TODO(), descriptor)
+		if err != nil {
+			return nil, fmt.Errorf("loading package reference: %w", err)
+		}
+		res, ok, err := spec.Resources().Get(s.snippet.Type)
+		if err != nil {
+			return nil, fmt.Errorf("getting resource from schema: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("resource type %q not found in package %q", s.snippet.Type, descriptor.Name)
+		}
 
 		attributes, resType, diags := pcl.BindResource(file, res)
 		if diags.HasErrors() {

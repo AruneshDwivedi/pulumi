@@ -14,11 +14,41 @@
 
 package resource
 
+import "github.com/blang/semver"
+
+// ParameterizationDescriptor is the serializable description of a dependency's parameterization.
+type ParameterizationDescriptor struct {
+	// Name is the name of the package.
+	Name string `json:"name" yaml:"name"`
+	// Version is the version of the package.
+	Version semver.Version `json:"version" yaml:"version"`
+	// Value is the parameter value of the package.
+	Value []byte `json:"value" yaml:"value"`
+}
+
+// PackageDescriptor is a descriptor for a package, this is similar to a plugin spec but also contains parameterization
+// info.
+type PackageDescriptor struct {
+	// Name is the simple name of the plugin.
+	Name string `json:"name" yaml:"name"`
+	// Version is the optional version of the plugin.
+	Version *semver.Version `json:"version,omitempty" yaml:"version,omitempty"`
+	// DownloadURL is the optional URL to use when downloading the provider plugin binary.
+	DownloadURL string `json:"downloadURL,omitempty" yaml:"downloadURL,omitempty"`
+	// Parameterization is the optional parameterization of the package.
+	Parameterization *ParameterizationDescriptor `json:"parameterization,omitempty" yaml:"parameterization,omitempty"`
+}
+
 // Snippet represents a snippet of PCL that should be associated with a stack. The engine reruns these in deployments.
 //
 //nolint:lll
 type Snippet struct {
-	Name string // The logical name of the resource this snippet is for.
-	Type string // The type of the resource this snippet is for.
-	Code string // the PCL code for an expression for the body of this resource.
+	// The logical name of the resource this snippet is for.
+	Name string `json:"name" yaml:"name"`
+	// The type of the resource this snippet is for.
+	Type string `json:"type" yaml:"type"`
+	// The PCL code for an expression for the body of this resource.
+	Code string `json:"code" yaml:"code"`
+	// The package descriptor for the resource
+	Descriptor PackageDescriptor `json:"descriptor" yaml:"descriptor"`
 }
