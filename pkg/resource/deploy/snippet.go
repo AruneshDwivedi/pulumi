@@ -43,11 +43,8 @@ const (
 )
 
 type snippet struct {
-	snippet      *resource.Snippet
-	state        snippetState
-	providerDone chan *RegisterResult
-
-	loader schema.ReferenceLoader
+	snippet *resource.Snippet
+	loader  schema.ReferenceLoader
 }
 
 // NewSnippetSource creates a Source that registers a single PCL resource snippet.
@@ -64,11 +61,19 @@ func (s *snippet) Project() tokens.PackageName {
 }
 
 func (s *snippet) Iterate(ctx context.Context, providers ProviderSource) (SourceIterator, error) {
-	return s, nil
+	return &snippetIterator{ctx: ctx, snippet: s}, nil
 }
 
-func (s *snippet) Cancel(ctx context.Context) error {
+func (s *snippetIterator) Cancel(ctx context.Context) error {
 	return nil
+}
+
+type snippetIterator struct {
+	ctx     context.Context
+	snippet *snippet
+
+	state        snippetState
+	providerDone chan *RegisterResult
 }
 
 // Next drives the snippet iterator through a two-step protocol:
@@ -80,12 +85,12 @@ func (s *snippet) Cancel(ctx context.Context) error {
 //     registration event with the provider reference filled in.
 //
 //  3. Third call (and beyond): returns nil to signal that the iterator is exhausted.
-func (s *snippet) Next() (SourceEvent, error) {
+func (s *snippetIterator) Next() (SourceEvent, error) {
 	switch s.state {
 	case snippetStateDone:
 		return nil, nil
 	case snippetStateStart:
-		pkg := tokens.Type(s.snippet.Type).Package()
+		pkg := tokens.Type(s.snippet.snippet.Type).Package()
 		s.providerDone = make(chan *RegisterResult)
 		s.state = snippetStateAwaitProvider
 		return &registerResourceEvent{
@@ -108,7 +113,7 @@ func (s *snippet) Next() (SourceEvent, error) {
 		}
 
 		// Bind the snippet code
-		input := strings.NewReader(s.snippet.Code)
+		input := strings.NewReader(s.snippet.snippet.Code)
 		parser := hclsyntax.NewParser()
 		if err := parser.ParseFile(input, "<snippet>"); err != nil {
 			return nil, fmt.Errorf("parse input: %w", err)
@@ -121,30 +126,30 @@ func (s *snippet) Next() (SourceEvent, error) {
 
 		// Lookup the resource type in the provider schema and bind the snippet code to it.
 		var parameterization *schema.ParameterizationDescriptor
-		if s.snippet.Descriptor.Parameterization != nil {
+		if s.snippet.snippet.Descriptor.Parameterization != nil {
 			parameterization = &schema.ParameterizationDescriptor{
-				Name:    s.snippet.Descriptor.Parameterization.Name,
-				Version: s.snippet.Descriptor.Parameterization.Version,
-				Value:   s.snippet.Descriptor.Parameterization.Value,
+				Name:    s.snippet.snippet.Descriptor.Parameterization.Name,
+				Version: s.snippet.snippet.Descriptor.Parameterization.Version,
+				Value:   s.snippet.snippet.Descriptor.Parameterization.Value,
 			}
 		}
 		descriptor := &schema.PackageDescriptor{
-			Name:             s.snippet.Descriptor.Name,
-			Version:          s.snippet.Descriptor.Version,
-			DownloadURL:      s.snippet.Descriptor.DownloadURL,
+			Name:             s.snippet.snippet.Descriptor.Name,
+			Version:          s.snippet.snippet.Descriptor.Version,
+			DownloadURL:      s.snippet.snippet.Descriptor.DownloadURL,
 			Parameterization: parameterization,
 		}
 
-		spec, err := s.loader.LoadPackageReferenceV2(context.TODO(), descriptor)
+		spec, err := s.snippet.loader.LoadPackageReferenceV2(context.TODO(), descriptor)
 		if err != nil {
 			return nil, fmt.Errorf("loading package reference: %w", err)
 		}
-		res, ok, err := spec.Resources().Get(s.snippet.Type)
+		res, ok, err := spec.Resources().Get(s.snippet.snippet.Type)
 		if err != nil {
 			return nil, fmt.Errorf("getting resource from schema: %w", err)
 		}
 		if !ok {
-			return nil, fmt.Errorf("resource type %q not found in package %q", s.snippet.Type, descriptor.Name)
+			return nil, fmt.Errorf("resource type %q not found in package %q", s.snippet.snippet.Type, descriptor.Name)
 		}
 
 		attributes, resType, diags := pcl.BindResource(file, res)
@@ -155,7 +160,7 @@ func (s *snippet) Next() (SourceEvent, error) {
 		evalCtx := pclruntime.NewEvalContext("", "", "", "", "", nil, nil, nil, nil, nil)
 		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
 		if poison != nil {
-			return nil, fmt.Errorf("snippet evaluation poisoned: %v", poison)
+			return nil, fmt.Errorf("snippet evaluation poisoned: %v", *poison)
 		}
 		if diags.HasErrors() {
 			return nil, diags
@@ -163,8 +168,8 @@ func (s *snippet) Next() (SourceEvent, error) {
 
 		return &registerResourceEvent{
 			goal: &resource.Goal{
-				Type:       tokens.Type(s.snippet.Type),
-				Name:       s.snippet.Name,
+				Type:       tokens.Type(s.snippet.snippet.Type),
+				Name:       s.snippet.snippet.Name,
 				Custom:     true,
 				Provider:   ref.String(),
 				Properties: props,
@@ -172,7 +177,7 @@ func (s *snippet) Next() (SourceEvent, error) {
 			done: make(chan *RegisterResult, 1),
 		}, nil
 	}
-	panic(fmt.Sprintf("invalid snippet state: %v", s.state))
+	contract.Failf("invalid snippet state: %v", s.state)
 }
 
 // MuxSource creates a source that multiplexes the given sources, interleaving their events
