@@ -178,6 +178,7 @@ func (s *snippetIterator) Next() (SourceEvent, error) {
 		}, nil
 	}
 	contract.Failf("invalid snippet state: %v", s.state)
+	return nil, nil
 }
 
 // MuxSource creates a source that multiplexes the given sources, interleaving their events

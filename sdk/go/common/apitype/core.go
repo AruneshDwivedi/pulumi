@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
@@ -163,6 +164,11 @@ type DeploymentV3 struct {
 	PendingOperations []OperationV2 `json:"pending_operations,omitempty" yaml:"pending_operations,omitempty"`
 	// Metadata associated with the snapshot.
 	Metadata SnapshotMetadataV1 `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	// Snippets are any PCL snippets associated with the snapshot. The engine reruns these on every update to
+	// produce additional resources alongside the program's. Deployments that include snippets must declare the
+	// "snippets" feature so older CLIs that cannot evaluate them refuse the snapshot rather than silently
+	// dropping the resources they would produce.
+	Snippets []SnippetV1 `json:"snippets,omitempty" yaml:"snippets,omitempty"`
 }
 
 func (snap *DeploymentV3) ToUntypedDeployment(version int, features []string) (*UntypedDeployment, error) {
@@ -270,6 +276,41 @@ type SecretsProvidersV1 struct {
 type SnapshotMetadataV1 struct {
 	// Metadata associated with any integrity error affecting the snapshot.
 	IntegrityErrorMetadata *SnapshotIntegrityErrorMetadataV1 `json:"integrity_error,omitempty" yaml:"integrity_error,omitempty"`
+}
+
+// SnippetV1 is the serialized form of a PCL snippet stored alongside a snapshot. Snippets are evaluated by the
+// engine on every update to produce additional resource registrations.
+type SnippetV1 struct {
+	// Name is the logical name of the resource this snippet registers.
+	Name string `json:"name" yaml:"name"`
+	// Type is the type token of the resource this snippet registers.
+	Type string `json:"type" yaml:"type"`
+	// Code is the PCL source for the body of the resource.
+	Code string `json:"code" yaml:"code"`
+	// Descriptor identifies the package that owns the resource type.
+	Descriptor PackageDescriptorV1 `json:"descriptor" yaml:"descriptor"`
+}
+
+// PackageDescriptorV1 is the serialized form of a package descriptor for a snippet.
+type PackageDescriptorV1 struct {
+	// Name is the simple name of the plugin.
+	Name string `json:"name" yaml:"name"`
+	// Version is the optional version of the plugin.
+	Version *semver.Version `json:"version,omitempty" yaml:"version,omitempty"`
+	// DownloadURL is the optional URL to use when downloading the provider plugin binary.
+	DownloadURL string `json:"downloadURL,omitempty" yaml:"downloadURL,omitempty"`
+	// Parameterization is the optional parameterization of the package.
+	Parameterization *ParameterizationDescriptorV1 `json:"parameterization,omitempty" yaml:"parameterization,omitempty"`
+}
+
+// ParameterizationDescriptorV1 is the serialized form of a parameterization for a packaged plugin.
+type ParameterizationDescriptorV1 struct {
+	// Name is the name of the parameterized package.
+	Name string `json:"name" yaml:"name"`
+	// Version is the version of the parameterized package.
+	Version semver.Version `json:"version" yaml:"version"`
+	// Value is the parameter value of the package.
+	Value []byte `json:"value" yaml:"value"`
 }
 
 // SnapshotIntegrityErrorMetadataV1 contains metadata about a snapshot integrity error, such as the version
