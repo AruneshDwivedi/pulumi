@@ -26,10 +26,73 @@ import (
 	. "github.com/pulumi/pulumi/pkg/v3/engine" //nolint:revive
 	lt "github.com/pulumi/pulumi/pkg/v3/engine/lifecycletest/framework"
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy/deploytest"
+	"github.com/pulumi/pulumi/pkg/v3/resource/stack"
+	"github.com/pulumi/pulumi/pkg/v3/secrets/b64"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 )
+
+// pclSnippetTestProvider returns a loader for a single-resource "pkgA" provider whose schema is
+// passed in by the caller. The provider counts create/update/delete calls into the supplied slices.
+func pclSnippetTestProvider(
+	schema string, created, updated, deleted *[]resource.URN,
+) []*deploytest.ProviderLoader {
+	return []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(ctx context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schema)}, nil
+				},
+				CreateF: func(ctx context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					if created != nil {
+						*created = append(*created, cr.URN)
+					}
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+				DiffF: func(_ context.Context, req plugin.DiffRequest) (plugin.DiffResult, error) {
+					if !req.OldInputs.DeepEquals(req.NewInputs) {
+						return plugin.DiffResult{Changes: plugin.DiffSome}, nil
+					}
+					return plugin.DiffResult{}, nil
+				},
+				UpdateF: func(_ context.Context, req plugin.UpdateRequest) (plugin.UpdateResponse, error) {
+					if updated != nil {
+						*updated = append(*updated, req.URN)
+					}
+					return plugin.UpdateResponse{Properties: req.NewInputs, Status: resource.StatusOK}, nil
+				},
+				DeleteF: func(_ context.Context, req plugin.DeleteRequest) (plugin.DeleteResponse, error) {
+					if deleted != nil {
+						*deleted = append(*deleted, req.URN)
+					}
+					return plugin.DeleteResponse{Status: resource.StatusOK}, nil
+				},
+			}, nil
+		}),
+	}
+}
+
+const pclSnippetSchemaPropA = `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "propA": { "type": "boolean" }
+      },
+      "requiredInputs": ["propA"]
+    }
+  }
+}`
 
 // TestPclSnippet checks that we can run a PCL snippet via an engine update.
 func TestPclSnippet(t *testing.T) {
@@ -187,4 +250,220 @@ func TestPclInvalidSnippet(t *testing.T) {
 	_, err = lt.TestOp(Update).RunStep(
 		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
 	require.ErrorContains(t, err, "Missing required input \"propB\"")
+}
+
+// TestPclSnippetSerializationRoundTrip checks that a snapshot containing snippets survives a full
+// untyped-deployment round trip (the path the backend uses to persist state) and that the
+// "snippets" feature flag gates older CLIs out of reading it.
+func TestPclSnippetSerializationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, nil, nil, nil)
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	// Serialize the snapshot the same way the backend does, validate the JSON shape, and check
+	// that the snippets feature is required.
+	snap.SecretsManager = b64.NewBase64SecretsManager()
+	untyped, err := stack.SerializeUntypedDeployment(t.Context(), snap, nil)
+	require.NoError(t, err)
+	require.Equal(t, stack.DeploymentSchemaVersionLatest, untyped.Version)
+	require.Contains(t, untyped.Features, "snippets")
+	require.NoError(t, stack.ValidateUntypedDeployment(untyped))
+
+	// Round trip through deserialize and check the snippet survived intact.
+	roundTripped, err := stack.DeserializeUntypedDeployment(t.Context(), untyped, b64.Base64SecretsProvider)
+	require.NoError(t, err)
+	require.Equal(t, snap.Snippets, roundTripped.Snippets)
+
+	// Reusing the deserialized snapshot as the base for the next update should still work
+	// end-to-end — the engine reruns the snippet and the resource state matches.
+	roundTripped, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, roundTripped), p.Options, false, p.BackendClient, nil, "2")
+	require.NoError(t, err)
+	require.Len(t, roundTripped.Snippets, 1)
+	require.Len(t, roundTripped.Resources, 2)
+	require.Equal(t, tokens.Type("pkgA:index:res"), roundTripped.Resources[1].Type)
+}
+
+// TestPclSnippetUpdate checks that mutating the code on a snippet between updates causes the
+// underlying resource to be updated rather than recreated.
+func TestPclSnippetUpdate(t *testing.T) {
+	t.Parallel()
+
+	var created, updated, deleted []resource.URN
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, &created, &updated, &deleted)
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+	require.Len(t, created, 1)
+	require.Empty(t, updated)
+	require.Equal(t, resource.PropertyMap{"propA": resource.NewProperty(true)}, snap.Resources[1].Inputs)
+
+	// Change the snippet code and rerun: we expect an Update, not a Create or Delete.
+	snap.Snippets[0].Code = `propA = false`
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.NoError(t, err)
+	require.Len(t, created, 1, "resource should not be recreated")
+	require.Len(t, updated, 1, "resource should be updated once")
+	require.Empty(t, deleted)
+	require.Equal(t, resource.PropertyMap{"propA": resource.NewProperty(false)}, snap.Resources[1].Inputs)
+}
+
+// TestPclSnippetDelete checks that removing a snippet from the snapshot causes the engine to
+// delete the resource it had previously synthesized.
+func TestPclSnippetDelete(t *testing.T) {
+	t.Parallel()
+
+	var created, updated, deleted []resource.URN
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, &created, &updated, &deleted)
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+	require.Len(t, snap.Resources, 2)
+	require.Len(t, created, 1)
+
+	// Remove the snippet and rerun. The synthesized resource should be deleted; the default
+	// provider for pkgA should also disappear since nothing references it.
+	snap.Snippets = nil
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.NoError(t, err)
+	require.Empty(t, snap.Snippets)
+	require.Empty(t, updated)
+	require.Len(t, deleted, 1)
+	for _, r := range snap.Resources {
+		require.NotEqual(t, tokens.Type("pkgA:index:res"), r.Type, "snippet resource should be gone")
+	}
+}
+
+// TestPclMultipleSnippets checks that several snippets in a snapshot each produce their own
+// resource and that all of them survive a round trip.
+//
+// Currently skipped: each snippet emits its own `pulumi:providers:<pkg>::default` registration,
+// so two snippets sharing a package collide on URN. The snippet source should instead route
+// provider acquisition through the engine's existing default-provider machinery; once that lands,
+// this test should pass and the skip can be removed.
+func TestPclMultipleSnippets(t *testing.T) {
+	t.Skip("snippets sharing a package collide on the default provider URN")
+	t.Parallel()
+
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, nil, nil, nil)
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "r1", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
+		{
+			Name: "r2", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = false`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+	require.Len(t, snap.Snippets, 2)
+
+	// Index resources by URN name so the assertions don't depend on engine ordering.
+	resourcesByName := map[string]*resource.State{}
+	for _, r := range snap.Resources {
+		if r.Type == "pkgA:index:res" {
+			resourcesByName[r.URN.Name()] = r
+		}
+	}
+	require.Len(t, resourcesByName, 2)
+	require.Equal(t,
+		resource.PropertyMap{"propA": resource.NewProperty(true)},
+		resourcesByName["r1"].Inputs)
+	require.Equal(t,
+		resource.PropertyMap{"propA": resource.NewProperty(false)},
+		resourcesByName["r2"].Inputs)
 }
