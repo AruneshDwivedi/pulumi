@@ -268,6 +268,7 @@ func SerializeDeploymentWithMetadata(
 		SecretsProviders:  secretsProvider,
 		PendingOperations: operations,
 		Metadata:          metadata,
+		Extensions:        snap.Extensions,
 	}, version, features, nil
 }
 
@@ -463,7 +464,7 @@ func DeserializeDeploymentV3(
 		}
 	}
 
-	return deploy.NewSnapshot(*manifest, secretsManager, data.resources, data.ops, metadata), nil
+	return deploy.NewSnapshot(*manifest, secretsManager, data.resources, data.ops, metadata, deployment.Extensions), nil
 }
 
 // initializeSecretsManager initializes the secrets manager for a deployment.
@@ -540,6 +541,7 @@ func SerializeResource(
 		Dependencies:            res.Dependencies,
 		InitErrors:              res.InitErrors,
 		Provider:                res.Provider,
+		ExtensionRef:            apitype.ExtensionRef(res.ExtensionRef),
 		PropertyDependencies:    res.PropertyDependencies,
 		PendingReplacement:      res.PendingReplacement,
 		AdditionalSecretOutputs: res.AdditionalSecretOutputs,
@@ -770,6 +772,7 @@ func DeserializeResource(res apitype.ResourceV3, dec config.Decrypter) (*resourc
 			Dependencies:            res.Dependencies,
 			InitErrors:              res.InitErrors,
 			Provider:                res.Provider,
+			ExtensionRef:            string(res.ExtensionRef),
 			PropertyDependencies:    res.PropertyDependencies,
 			PendingReplacement:      res.PendingReplacement,
 			AdditionalSecretOutputs: res.AdditionalSecretOutputs,
