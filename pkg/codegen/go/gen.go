@@ -3874,6 +3874,12 @@ func (pkg *pkgContext) getTypeImports(t schema.Type, recurse bool, importsAndAli
 	}
 }
 
+// extensionModulePath is the local Go module path for an extension SDK, named
+// for the extension rather than the base provider it extends.
+func extensionModulePath(pkg *schema.Package) string {
+	return pkg.Parameterization.Name
+}
+
 // ExtractModulePath creates a go module path for a given package.
 func ExtractModulePath(extPkg schema.PackageReference) string {
 	contract.Assertf(extPkg != nil, "ExtractModulePath(nil) is not allowed")
@@ -4226,6 +4232,13 @@ func (pkg *pkgContext) genResourceModule(w io.Writer) error {
 func generatePackageContextMap(tool string, pkg schema.PackageReference, goInfo GoPackageInfo, externalPkgs *Cache) (map[string]*pkgContext, error) {
 	packages := map[string]*pkgContext{}
 
+	// An extension SDK is generated into the consuming project, so it uses a
+	// local module path rather than the base provider's.
+	if def, err := pkg.Definition(); err == nil && def.Parameterization != nil &&
+		def.Parameterization.Kind == schema.ParameterizationExtension {
+		goInfo.ImportBasePath = extensionModulePath(def) + "/" + goPackage(def.Name)
+	}
+
 	// Share the cache
 	if externalPkgs == nil {
 		externalPkgs = globalCache
@@ -4513,7 +4526,12 @@ func generatePackageContextMap(tool string, pkg schema.PackageReference, goInfo 
 		}
 	}
 
-	scanResource(def.Provider)
+	// Extension-parameterized packages don't get their own Provider class — they
+	// reuse the base provider their extension was applied to.
+	isExtension := def.Parameterization != nil && def.Parameterization.Kind == schema.ParameterizationExtension
+	if !isExtension && def.Provider != nil {
+		scanResource(def.Provider)
+	}
 	for _, r := range def.Resources {
 		scanResource(r)
 	}
@@ -4832,16 +4850,17 @@ func GeneratePackage(tool string,
 		pulumiPlugin.Version = pkg.Version.String()
 	}
 
-	if pkg.Parameterization != nil {
-		// For a parameterized package the plugin name/version is from the base provider information, not the
-		// top-level package name/version.
+	// For both replacement and extension parameterization the plugin name/version
+	// in pulumi-plugin.json is from the base provider, not the top-level package.
+	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
 			Name:    pulumiPlugin.Name,
 			Version: pulumiPlugin.Version,
-			Value:   pkg.Parameterization.Parameter,
+			Value:   param.Parameter,
+			Kind:    string(param.Kind),
 		}
-		pulumiPlugin.Name = pkg.Parameterization.BaseProvider.Name
-		pulumiPlugin.Version = pkg.Parameterization.BaseProvider.Version.String()
+		pulumiPlugin.Name = param.BaseProvider.Name
+		pulumiPlugin.Version = param.BaseProvider.Version.String()
 	}
 
 	pulumiPluginJSON, err := pulumiPlugin.JSON()
@@ -5202,6 +5221,10 @@ func GeneratePackage(tool string,
 			}
 		}
 
+		if pkg.Parameterization != nil && pkg.Parameterization.Kind == schema.ParameterizationExtension {
+			modulePath = extensionModulePath(pkg)
+		}
+
 		var gomod modfile.File
 		err = gomod.AddModuleStmt(modulePath)
 		contract.AssertNoErrorf(err, "could not add module statement to go.mod")
@@ -5368,6 +5391,10 @@ func Pkg%[1]sDefaultOpts(opts []pulumi.%[1]sOption) []pulumi.%[1]sOption {
 		}
 		versionPackageRef = fmt.Sprintf("semver.MustParse(%q)", p.Version.String())
 
+		// The template emits a PkgGetPackageRef function that, on first call per
+		// pulumi.Context, registers the package and caches the returned ref. The
+		// only difference between replacement and extension parameterization is
+		// the Kind carried on the Parameterization proto message.
 		const packageRefTemplate string = `
 // PkgGetPackageRef returns the package reference for the current package.
 // The reference is cached per pulumi.Context so that concurrent inline
@@ -5387,19 +5414,22 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 				Name: %q,
 				Version: %q,
 				Value: parameter,
+				Kind: %q,
 			},
 		}, nil
 	})
 }
 `
 
-		value := base64.StdEncoding.EncodeToString(p.Parameterization.Parameter)
+		param := p.Parameterization
+		value := base64.StdEncoding.EncodeToString(param.Parameter)
 		key := fmt.Sprintf("%s:%s", p.Name, p.Version.String())
 		_, err = fmt.Fprintf(w, packageRefTemplate,
 			key,
 			value,
-			p.Parameterization.BaseProvider.Name, p.Parameterization.BaseProvider.Version.String(), p.PluginDownloadURL,
+			param.BaseProvider.Name, param.BaseProvider.Version.String(), p.PluginDownloadURL,
 			p.Name, p.Version.String(),
+			string(param.Kind),
 		)
 		if err != nil {
 			return err

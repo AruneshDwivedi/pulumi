@@ -2468,16 +2468,17 @@ func genNPMPackageMetadata(
 	}
 
 	var pulumiPlugin plugin.PulumiPluginJSON
-	if pkg.Parameterization != nil {
+	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin = plugin.PulumiPluginJSON{
 			Resource: true,
 			Server:   pkg.PluginDownloadURL,
-			Name:     pkg.Parameterization.BaseProvider.Name,
-			Version:  pkg.Parameterization.BaseProvider.Version.String(),
+			Name:     param.BaseProvider.Name,
+			Version:  param.BaseProvider.Version.String(),
 			Parameterization: &plugin.PulumiParameterizationJSON{
 				Name:    pkg.Name,
 				Version: pkg.Version.String(),
-				Value:   pkg.Parameterization.Parameter,
+				Value:   param.Parameter,
+				Kind:    string(param.Kind),
 			},
 		}
 	} else {
@@ -2751,7 +2752,12 @@ func generateModuleContextMap(tool string, pkg *schema.Package, extraFiles map[s
 		}
 	}
 
-	scanResource(pkg.Provider)
+	// Extension-parameterized packages don't get their own Provider class — they
+	// reuse the base provider their extension was applied to.
+	isExtension := pkg.Parameterization != nil && pkg.Parameterization.Kind == schema.ParameterizationExtension
+	if !isExtension && pkg.Provider != nil {
+		scanResource(pkg.Provider)
+	}
 	for _, r := range pkg.Resources {
 		scanResource(r)
 	}
@@ -2946,7 +2952,9 @@ func (mod *modContext) genUtilitiesFile(w io.Writer) error {
 	}
 
 	if def.Parameterization != nil {
-		base64Parameter := base64.StdEncoding.EncodeToString(def.Parameterization.Parameter)
+		param := def.Parameterization
+		isExtension := param.Kind == schema.ParameterizationExtension
+		base64Parameter := base64.StdEncoding.EncodeToString(param.Parameter)
 
 		_, err = fmt.Fprintf(w, `
 export async function getPackage(): Promise<string | undefined> {
@@ -2957,15 +2965,17 @@ export async function getPackage(): Promise<string | undefined> {
 		packageName: "%s",
 		packageVersion: "%s",
 		base64Parameter: "%s",
+		extension: %t,
 	});
 }
 `,
-			def.Parameterization.BaseProvider.Name,
-			def.Parameterization.BaseProvider.Version.String(),
+			param.BaseProvider.Name,
+			param.BaseProvider.Version.String(),
 			def.PluginDownloadURL,
 			def.Name,
 			def.Version,
-			base64Parameter)
+			base64Parameter,
+			isExtension)
 	}
 
 	return err
