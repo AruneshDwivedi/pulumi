@@ -175,6 +175,10 @@ func bindInputFile(file *syntax.File, opts ...BindOption) (
 		o(&options)
 	}
 
+	if options.packageCache == nil {
+		options.packageCache = NewPackageCache()
+	}
+
 	b := &binder{
 		options:            options,
 		tokens:             syntax.NewTokenMapForFiles([]*syntax.File{file}),

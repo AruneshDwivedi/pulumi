@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/hashicorp/hcl/v2"
 	hclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -41,6 +42,9 @@ type snippet struct {
 	loader     schema.ReferenceLoader
 	rootDir    string
 	workingDir string
+
+	monitor    pulumirpc.ResourceMonitorClient
+	packageRef string
 }
 
 // NewSnippetSource creates a Source that registers a single PCL resource snippet.
@@ -102,7 +106,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		return promise.Errorf[struct{}]("resource type %q not found in package %q", s.snippet.Type, descriptor.Name)
 	}
 
-	attributes, resType, diags := pcl.BindResource(file, res)
+	attributes, resType, diags := pcl.BindResource(file, res, pcl.Loader(s.loader))
 	if diags.HasErrors() {
 		return promise.Errorf[struct{}]("binding resource: %v", diags)
 	}
@@ -121,6 +125,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		defer contract.IgnoreClose(conn)
 
 		monitor := pulumirpc.NewResourceMonitorClient(conn)
+		s.monitor = monitor
 
 		// Register the package with the monitor first. The returned ref is what the engine uses to look up the
 		// (possibly parameterized) provider for the resource we register below.
@@ -145,6 +150,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			cts.Reject(fmt.Errorf("register snippet package: %w", err))
 			return
 		}
+		s.packageRef = registerResp.Ref
 
 		infoResp, err := monitor.GetDeploymentInfo(context.TODO(), &emptypb.Empty{})
 		if err != nil {
@@ -155,7 +161,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		evalCtx := pclruntime.NewEvalContext(
 			s.workingDir, s.rootDir,
 			infoResp.Organization, infoResp.Project, infoResp.Stack,
-			nil, nil, nil, nil, nil)
+			nil, s.lookupFunction, nil, s.invoke, nil)
 		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
 		if poison != nil {
 			cts.Reject(fmt.Errorf("snippet evaluation poisoned: %v", *poison))
@@ -193,6 +199,73 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		cts.Fulfill(struct{}{})
 	}()
 	return cts.Promise()
+}
+
+func (s *snippet) lookupPackageDescriptor(pkg string) *schema.PackageDescriptor {
+	// If this is for the snippets package we can return a descriptor directly, else we just guess by name.
+	spkg, _, _, _ := pcl.DecomposeToken(s.snippet.Type, hcl.Range{})
+	if spkg == pkg {
+		desc := &schema.PackageDescriptor{
+			Name:        s.snippet.Descriptor.Name,
+			Version:     s.snippet.Descriptor.Version,
+			DownloadURL: s.snippet.Descriptor.DownloadURL,
+		}
+		if s.snippet.Descriptor.Parameterization != nil {
+			desc.Parameterization = &schema.ParameterizationDescriptor{
+				Name:    s.snippet.Descriptor.Parameterization.Name,
+				Version: s.snippet.Descriptor.Parameterization.Version,
+				Value:   s.snippet.Descriptor.Parameterization.Value,
+			}
+		}
+		return desc
+	}
+
+	return &schema.PackageDescriptor{Name: pkg}
+}
+
+func (s *snippet) lookupFunction(ctx context.Context, token string) (*schema.Function, error) {
+	pkg, mod, typ, diags := pcl.DecomposeToken(token, hcl.Range{})
+	contract.Assertf(!diags.HasErrors(), "invalid token format for function token %s", token)
+
+	token = fmt.Sprintf("%s:%s:%s", pkg, mod, typ)
+
+	descriptor := s.lookupPackageDescriptor(pkg)
+	pkgref, err := s.loader.LoadPackageReferenceV2(ctx, descriptor)
+	if err != nil {
+		return nil, fmt.Errorf("load package for token %s: %w", token, err)
+	}
+	functions := pkgref.Functions()
+	schemaFunction, ok, err := functions.Get(token)
+	if err != nil {
+		return nil, fmt.Errorf("get function from package for token %s: %w", token, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("get function from package for token %s", token)
+	}
+	return schemaFunction, nil
+}
+
+func (s *snippet) getPackageRefFromToken(token string) (string, error) {
+	pkg, _, _, diags := pcl.DecomposeToken(token, hcl.Range{})
+	contract.Assertf(!diags.HasErrors(), "invalid token format for resource token %s", token)
+	// If the token is for the same package as the snippet, we can return the package ref we got when registering the snippet.
+	if pkg == s.snippet.Descriptor.Name {
+		return s.packageRef, nil
+	}
+	// Else we don't have a ref, just return blank.
+	return "", nil
+}
+
+func (s *snippet) invoke(
+	ctx context.Context, req *pulumirpc.ResourceInvokeRequest,
+) (*pulumirpc.InvokeResponse, error) {
+	ref, err := s.getPackageRefFromToken(req.Tok)
+	if err != nil {
+		return nil, err
+	}
+	req.PackageRef = ref
+	resp, err := s.monitor.Invoke(ctx, req)
+	return resp, err
 }
 
 // MuxSource creates a source that multiplexes the given sources, interleaving their events

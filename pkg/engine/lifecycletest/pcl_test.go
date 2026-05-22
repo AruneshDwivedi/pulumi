@@ -600,3 +600,111 @@ rootDir = rootDirectory()`,
 		"rootDir":    resource.NewProperty("/"),
 	}, res.Inputs)
 }
+
+// TestPclSnippetInvoke checks that a snippet can call an invoke against the resource monitor and use
+// the returned value as a resource input.
+func TestPclSnippetInvoke(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "message": { "type": "string" }
+      },
+      "requiredInputs": ["message"]
+    }
+  },
+  "functions": {
+    "pkgA:index:echo": {
+      "inputs": {
+        "properties": {
+          "input": { "type": "string" }
+        },
+        "required": ["input"]
+      },
+      "outputs": {
+        "properties": {
+          "result": { "type": "string" }
+        },
+        "required": ["result"]
+      }
+    }
+  }
+}`
+
+	var invoked []string
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+				InvokeF: func(_ context.Context, req plugin.InvokeRequest) (plugin.InvokeResponse, error) {
+					input := req.Args["input"].StringValue()
+					invoked = append(invoked, input)
+					return plugin.InvokeResponse{
+						Properties: resource.PropertyMap{
+							"result": resource.NewProperty("echoed: " + input),
+						},
+					}, nil
+				},
+			}, nil
+		}),
+	}
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `message = invoke("pkgA:index:echo", { input = "hi" }).result`,
+		},
+	}
+
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"hi"}, invoked, "invoke should be called exactly once with input \"hi\"")
+
+	var res *resource.State
+	for _, r := range snap.Resources {
+		if r.Type == "pkgA:index:res" {
+			res = r
+			break
+		}
+	}
+	require.NotNil(t, res, "snippet resource should have been created")
+	require.Equal(t, resource.PropertyMap{
+		"message": resource.NewProperty("echoed: hi"),
+	}, res.Inputs)
+}
