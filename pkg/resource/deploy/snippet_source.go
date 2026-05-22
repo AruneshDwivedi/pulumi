@@ -248,7 +248,8 @@ func (s *snippet) lookupFunction(ctx context.Context, token string) (*schema.Fun
 func (s *snippet) getPackageRefFromToken(token string) (string, error) {
 	pkg, _, _, diags := pcl.DecomposeToken(token, hcl.Range{})
 	contract.Assertf(!diags.HasErrors(), "invalid token format for resource token %s", token)
-	// If the token is for the same package as the snippet, we can return the package ref we got when registering the snippet.
+	// If the token is for the same package as the snippet, we can return the package ref we got when registering the
+	// snippet.
 	if pkg == s.snippet.Descriptor.Name {
 		return s.packageRef, nil
 	}
