@@ -276,11 +276,22 @@ func (sm *JournalSnapshotManager) BeginMutation(step deploy.Step) (SnapshotMutat
 		return sm.doRemovePendingReplace(step, operationID)
 	case deploy.OpImport, deploy.OpImportReplacement:
 		return sm.doImport(step, operationID)
+	case deploy.OpExtendParameterize:
+		// ExtensionParameterizeStep doesn't mutate resource state — it only side-effects
+		// the provider plugin. The backend SnapshotManager records the blob; the
+		// journal has nothing to track here.
+		return &noopJournalMutation{}, nil
 	}
 
 	contract.Failf("unknown StepOp: %s", step.Op())
 	return nil, nil
 }
+
+// noopJournalMutation is a SnapshotMutation that doesn't record anything in the journal.
+// Used by step types that operate on engine state outside the resource graph (e.g. ExtensionParameterizeStep).
+type noopJournalMutation struct{}
+
+func (*noopJournalMutation) End(_ deploy.Step, _ bool) error { return nil }
 
 // Write sets the base snapshot for this SnapshotManager. This is used to rebase the journal
 // on a new base snapshot, in particular when providers have been updated. We always expect
@@ -298,6 +309,7 @@ func (sm *JournalSnapshotManager) Write(base *deploy.Snapshot) error {
 		Resources:         make([]*resource.State, 0, len(base.Resources)),
 		PendingOperations: make([]resource.Operation, 0, len(base.PendingOperations)),
 		Metadata:          base.Metadata,
+		Extensions:        base.Extensions,
 	}
 
 	// Copy the resources from the base snapshot to the new snapshot.

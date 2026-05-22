@@ -16,6 +16,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -442,6 +444,10 @@ type resmon struct {
 	// A map of UUIDs to the description of a provider package they correspond to
 	packageRefMap map[string]providers.ProviderRequest
 
+	extensionRefLock sync.RWMutex
+	// A map of UUIDs to the provider extension they respond to
+	extensionRefMap map[string]apitype.Extension
+
 	// the organization name for the deployment.
 	organization string
 }
@@ -500,6 +506,7 @@ func newResourceMonitor(
 		resourceHooks:       src.resourceHooks,
 		resourceTransforms:  map[resource.URN][]TransformFunction{},
 		packageRefMap:       map[string]providers.ProviderRequest{},
+		extensionRefMap:     map[string]apitype.Extension{},
 		grpcDialOptions:     src.plugctx.DialOptions,
 	}
 
@@ -705,7 +712,7 @@ func (rm *resmon) RegisterPackage(ctx context.Context,
 	}
 	// Parse the parameterization
 	var parameterization *workspace.Parameterization
-	if req.Parameterization != nil {
+	if req.Parameterization != nil && req.Parameterization.Kind != string(workspace.ParameterizationExtension) {
 		parameterizationVersion, err := semver.Parse(req.Parameterization.Version)
 		if err != nil {
 			return nil, fmt.Errorf("parse parameter version %s: %w", req.Parameterization.Version, err)
@@ -728,19 +735,54 @@ func (rm *resmon) RegisterPackage(ctx context.Context,
 	rm.packageRefLock.Lock()
 	defer rm.packageRefLock.Unlock()
 
-	// See if this package is already registered, else add it to the map.
+	// Extension calls dedup by content hash: identical (base, extension) pairs always
+	// produce the same ref, and pairs differing only in the extension produce different
+	// refs. Replacement / plain calls dedup by ProviderRequest as before.
+	if req.Parameterization != nil && req.Parameterization.Kind == string(workspace.ParameterizationExtension) {
+		extension := apitype.Extension{
+			Name:    req.Parameterization.Name,
+			Version: req.Parameterization.Version,
+			Value:   req.Parameterization.Value,
+		}
+		ref := hashExtension(extension)
+
+		if _, already := rm.packageRefMap[ref]; already {
+			logging.V(5).Infof("ResourceMonitor.RegisterPackage(%v) matched %s", req, ref)
+			return &pulumirpc.RegisterPackageResponse{Ref: ref}, nil
+		}
+
+		rm.extensionRefLock.Lock()
+		rm.extensionRefMap[ref] = extension
+		rm.extensionRefLock.Unlock()
+
+		rm.packageRefMap[ref] = pi
+		logging.V(5).Infof("ResourceMonitor.RegisterPackage(%v) created %s", req, ref)
+		return &pulumirpc.RegisterPackageResponse{Ref: ref}, nil
+	}
+
 	for uuid, candidate := range rm.packageRefMap {
 		if reflect.DeepEqual(candidate, pi) {
 			logging.V(5).Infof("ResourceMonitor.RegisterPackage(%v) matched %s", req, uuid)
 			return &pulumirpc.RegisterPackageResponse{Ref: uuid}, nil
 		}
 	}
+	ref := uuid.New().String()
+	rm.packageRefMap[ref] = pi
+	logging.V(5).Infof("ResourceMonitor.RegisterPackage(%v) created %s", req, ref)
+	return &pulumirpc.RegisterPackageResponse{Ref: ref}, nil
+}
 
-	// Wasn't found add it to the map
-	uuid := uuid.New().String()
-	rm.packageRefMap[uuid] = pi
-	logging.V(5).Infof("ResourceMonitor.RegisterPackage(%v) created %s", req, uuid)
-	return &pulumirpc.RegisterPackageResponse{Ref: uuid}, nil
+// hashExtension produces a stable content-based reference for an extension blob.
+// The hash includes Name, Version, and Value so semantically distinct extensions
+// never collide.
+func hashExtension(ext apitype.Extension) string {
+	h := sha256.New()
+	h.Write([]byte(ext.Name))
+	h.Write([]byte{0})
+	h.Write([]byte(ext.Version))
+	h.Write([]byte{0})
+	h.Write(ext.Value)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // lookupPackageRef returns the provider request for the given package ref,
@@ -2661,10 +2703,26 @@ func (rm *resmon) RegisterResource(ctx context.Context,
 			StackTrace:              stackTrace,
 			ResourceHooks:           resourceHooks,
 		}.Make()
+
+		var ext *apitype.Extension
+		var extRef apitype.ExtensionRef
+		if packageRef := req.GetPackageRef(); packageRef != "" {
+			rm.extensionRefLock.RLock()
+			if e, has := rm.extensionRefMap[packageRef]; has {
+				ext = &e
+				// Only carry the ref onto the event when there's an actual
+				// extension blob — replacement-param packageRefs don't belong
+				// in ResourceV3.ExtensionRef.
+				extRef = apitype.ExtensionRef(packageRef)
+			}
+			rm.extensionRefLock.RUnlock()
+		}
 		// Send the goal state to the engine.
 		step := &registerResourceEvent{
-			goal: goal,
-			done: make(chan *RegisterResult),
+			goal:         goal,
+			done:         make(chan *RegisterResult),
+			extension:    ext,
+			extensionRef: extRef,
 		}
 
 		select {
@@ -2883,8 +2941,10 @@ func (rm *resmon) RegisterResourceOutputs(ctx context.Context,
 }
 
 type registerResourceEvent struct {
-	goal *resource.Goal       // the resource goal state produced by the iterator.
-	done chan *RegisterResult // the channel to communicate with after the resource state is available.
+	goal         *resource.Goal       // the resource goal state produced by the iterator.
+	done         chan *RegisterResult // the channel to communicate with after the resource state is available.
+	extension    *apitype.Extension   // optional extension data if this came from an extension package
+	extensionRef apitype.ExtensionRef // extension reference
 }
 
 var _ RegisterResourceEvent = (*registerResourceEvent)(nil)
@@ -2893,6 +2953,14 @@ func (g *registerResourceEvent) event() {}
 
 func (g *registerResourceEvent) Goal() *resource.Goal {
 	return g.goal
+}
+
+func (g *registerResourceEvent) Extension() *apitype.Extension {
+	return g.extension
+}
+
+func (g *registerResourceEvent) ExtensionRef() apitype.ExtensionRef {
+	return g.extensionRef
 }
 
 func (g *registerResourceEvent) Done(result *RegisterResult) {
