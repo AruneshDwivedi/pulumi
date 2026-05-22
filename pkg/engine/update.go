@@ -938,7 +938,8 @@ func newUpdateSource(ctx context.Context,
 
 		snippetSources := make([]func(string) *promise.Promise[struct{}], len(target.Snapshot.Snippets))
 		for i, snippet := range target.Snapshot.Snippets {
-			snippetSources[i] = deploy.NewSnippetSource(snippet, loader)
+			snippetSources[i] = deploy.NewSnippetSource(
+				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd)
 		}
 		program = deploy.NewMuxSource(program, snippetSources...)
 	}

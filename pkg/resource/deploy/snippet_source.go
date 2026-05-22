@@ -37,13 +37,18 @@ import (
 )
 
 type snippet struct {
-	snippet *resource.Snippet
-	loader  schema.ReferenceLoader
+	snippet    *resource.Snippet
+	loader     schema.ReferenceLoader
+	rootDir    string
+	workingDir string
 }
 
 // NewSnippetSource creates a Source that registers a single PCL resource snippet.
-func NewSnippetSource(s resource.Snippet, loader schema.ReferenceLoader) func(string) *promise.Promise[struct{}] {
-	src := &snippet{snippet: &s, loader: loader}
+func NewSnippetSource(s resource.Snippet,
+	loader schema.ReferenceLoader,
+	rootDir, workingDir string,
+) func(string) *promise.Promise[struct{}] {
+	src := &snippet{snippet: &s, loader: loader, rootDir: rootDir, workingDir: workingDir}
 	return src.run
 }
 
@@ -148,7 +153,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		}
 
 		evalCtx := pclruntime.NewEvalContext(
-			"", "",
+			s.workingDir, s.rootDir,
 			infoResp.Organization, infoResp.Project, infoResp.Stack,
 			nil, nil, nil, nil, nil)
 		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
