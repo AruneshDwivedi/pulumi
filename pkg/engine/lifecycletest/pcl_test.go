@@ -401,3 +401,118 @@ func TestPclMultipleSnippets(t *testing.T) {
 		resource.PropertyMap{"propA": resource.NewProperty(false)},
 		resourcesByName["r2"].Inputs)
 }
+
+// TestPclSnippetBuiltins exercises the PCL evaluator wired up for a snippet, verifying that it has
+// access to context (project, stack, organization) and trivial builtins (max, length).
+func TestPclSnippetBuiltins(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "projectName":  { "type": "string" },
+        "stackName":    { "type": "string" },
+        "orgName":      { "type": "string" },
+        "maxValue":     { "type": "integer" },
+        "lengthValue":  { "type": "integer" }
+      },
+      "requiredInputs": [
+        "projectName", "stackName", "orgName",
+        "maxValue", "lengthValue"
+      ]
+    }
+  },
+  "functions": {
+    "pkgA:index:echo": {
+      "inputs": {
+        "properties": {
+          "input": { "type": "string" }
+        }
+      },
+      "outputs": {
+        "properties": {
+          "result": { "type": "string" }
+        },
+        "required": ["result"]
+      }
+    }
+  }
+}`
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+			}, nil
+		}),
+	}
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+
+	p := &lt.TestPlan{
+		Project: "my-project",
+		Stack:   "my-stack",
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code: `projectName = project()
+stackName = stack()
+orgName = organization()
+maxValue = max(1, 7, 3)
+lengthValue = length(["a", "b", "c", "d"])`,
+		},
+	}
+
+	target := p.GetTarget(t, snap)
+	target.Organization = "my-org"
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), target, p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	// Find the synthesized resource.
+	var res *resource.State
+	for _, r := range snap.Resources {
+		if r.Type == "pkgA:index:res" {
+			res = r
+			break
+		}
+	}
+	require.NotNil(t, res, "snippet resource should have been created")
+	require.Equal(t, resource.PropertyMap{
+		"projectName": resource.NewProperty("my-project"),
+		"stackName":   resource.NewProperty("my-stack"),
+		"orgName":     resource.NewProperty("my-org"),
+		"maxValue":    resource.NewProperty(7.0),
+		"lengthValue": resource.NewProperty(4.0),
+	}, res.Inputs)
+}

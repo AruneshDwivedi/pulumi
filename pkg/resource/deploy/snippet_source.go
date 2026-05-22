@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	hclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
@@ -140,7 +141,16 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			return
 		}
 
-		evalCtx := pclruntime.NewEvalContext("", "", "", "", "", nil, nil, nil, nil, nil)
+		infoResp, err := monitor.GetDeploymentInfo(context.TODO(), &emptypb.Empty{})
+		if err != nil {
+			cts.Reject(fmt.Errorf("get deployment info: %w", err))
+			return
+		}
+
+		evalCtx := pclruntime.NewEvalContext(
+			"", "",
+			infoResp.Organization, infoResp.Project, infoResp.Stack,
+			nil, nil, nil, nil, nil)
 		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
 		if poison != nil {
 			cts.Reject(fmt.Errorf("snippet evaluation poisoned: %v", *poison))
