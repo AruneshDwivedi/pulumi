@@ -1,0 +1,4 @@
+changes:
+- type: feat
+  scope: cli/package
+  description: Add the `pulumi package extend` command, which generates a typed SDK that layers additional resource types onto an existing provider.
