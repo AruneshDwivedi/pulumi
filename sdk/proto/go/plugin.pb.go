@@ -213,6 +213,7 @@ type PackageParameterization struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`       // the parameterized package name.
 	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"` // the parameterized package version.
 	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`     // the parameter value for the parameterized package.
+	Kind          string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`       // the parameterization kind: "extension" extends the base plugin; empty replaces it.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -266,6 +267,13 @@ func (x *PackageParameterization) GetValue() []byte {
 		return x.Value
 	}
 	return nil
+}
+
+func (x *PackageParameterization) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 // PackageDependency is information about a package that a program may depend upon.
@@ -462,11 +470,12 @@ const file_pulumi_plugin_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"(\n" +
 	"\fPluginAttach\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"]\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"q\n" +
 	"\x17PackageParameterization\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\"\xc6\x02\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind\"\xc6\x02\n" +
 	"\x11PackageDependency\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x18\n" +

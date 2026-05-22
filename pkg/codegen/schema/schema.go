@@ -597,10 +597,25 @@ type BaseProvider struct {
 	Version semver.Version
 }
 
+// ParameterizationKind distinguishes the two flavors of provider parameterization.
+type ParameterizationKind string
+
+const (
+	// ParameterizationReplacement (the default) replaces the base plugin's identity.
+	ParameterizationReplacement ParameterizationKind = ""
+	// ParameterizationExtension extends the base plugin in place, adding resources alongside its own.
+	ParameterizationExtension ParameterizationKind = "extension"
+)
+
 type Parameterization struct {
+	// Name is the name of the parameterized package.
+	Name string
+	// BaseProvider is the plugin the parameterization is applied to.
 	BaseProvider BaseProvider
 	// Parameter is the parameter for the provider.
 	Parameter []byte
+	// Kind distinguishes an extension parameterization from a replacement one.
+	Kind ParameterizationKind
 }
 
 // Package describes a Pulumi package.
@@ -1133,8 +1148,8 @@ func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
 	}
 
 	var metadata *MetadataSpec
-	// Don't set support pack in meta spec if Parameterization is present because that implictly sets
-	// SupportPack when reading back in anyway.
+	// Don't set support pack in meta spec if Parameterization is present because that
+	// implictly sets SupportPack when reading back in anyway.
 	supportPack := pkg.SupportPack && pkg.Parameterization == nil
 	if pkg.moduleFormat != nil || supportPack {
 		metadata = &MetadataSpec{SupportPack: supportPack}
@@ -1146,11 +1161,13 @@ func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
 	var parameterization *ParameterizationSpec
 	if pkg.Parameterization != nil {
 		parameterization = &ParameterizationSpec{
+			Name: pkg.Parameterization.Name,
 			BaseProvider: BaseProviderSpec{
 				Name:    pkg.Parameterization.BaseProvider.Name,
 				Version: pkg.Parameterization.BaseProvider.Version.String(),
 			},
 			Parameter: pkg.Parameterization.Parameter,
+			Kind:      pkg.Parameterization.Kind,
 		}
 	}
 
@@ -2272,10 +2289,14 @@ type BaseProviderSpec struct {
 
 // ParameterizationSpec is the serializable description of a provider parameterization.
 type ParameterizationSpec struct {
+	// Name is the name of the parameterized package.
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// The base provider to parameterize.
 	BaseProvider BaseProviderSpec `json:"baseProvider" yaml:"baseProvider"`
 	// The parameter to apply to the base provider.
 	Parameter []byte `json:"parameter" yaml:"parameter"`
+	// Kind distinguishes an extension parameterization from a replacement one (the default, empty).
+	Kind ParameterizationKind `json:"kind,omitempty" yaml:"kind,omitempty"`
 }
 
 // PackageSpec is the serializable description of a Pulumi package.

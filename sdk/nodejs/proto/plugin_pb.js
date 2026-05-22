@@ -695,7 +695,8 @@ proto.pulumirpc.PackageParameterization.toObject = function(includeInstance, msg
   var f, obj = {
 name: jspb.Message.getFieldWithDefault(msg, 1, ""),
 version: jspb.Message.getFieldWithDefault(msg, 2, ""),
-value: msg.getValue_asB64()
+value: msg.getValue_asB64(),
+kind: jspb.Message.getFieldWithDefault(msg, 4, "")
   };
 
   if (includeInstance) {
@@ -744,6 +745,10 @@ proto.pulumirpc.PackageParameterization.deserializeBinaryFromReader = function(m
       var value = /** @type {!Uint8Array} */ (reader.readBytes());
       msg.setValue(value);
       break;
+    case 4:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setKind(value);
+      break;
     default:
       reader.skipField();
       break;
@@ -791,6 +796,13 @@ proto.pulumirpc.PackageParameterization.serializeBinaryToWriter = function(messa
   if (f.length > 0) {
     writer.writeBytes(
       3,
+      f
+    );
+  }
+  f = message.getKind();
+  if (f.length > 0) {
+    writer.writeString(
+      4,
       f
     );
   }
@@ -872,6 +884,24 @@ proto.pulumirpc.PackageParameterization.prototype.getValue_asU8 = function() {
  */
 proto.pulumirpc.PackageParameterization.prototype.setValue = function(value) {
   return jspb.Message.setProto3BytesField(this, 3, value);
+};
+
+
+/**
+ * optional string kind = 4;
+ * @return {string}
+ */
+proto.pulumirpc.PackageParameterization.prototype.getKind = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 4, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.pulumirpc.PackageParameterization} returns this
+ */
+proto.pulumirpc.PackageParameterization.prototype.setKind = function(value) {
+  return jspb.Message.setProto3StringField(this, 4, value);
 };
 
 

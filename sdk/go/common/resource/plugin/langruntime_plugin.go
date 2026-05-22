@@ -280,10 +280,18 @@ func (h *langhost) GetRequiredPackages(
 					info.GetName(), info.Parameterization.Version, err)
 			}
 
+			kind := workspace.ParameterizationKind(info.Parameterization.Kind)
+			if !kind.Valid() {
+				return nil, fmt.Errorf(
+					"unknown parameterization kind %q returned by language host for %s",
+					info.Parameterization.Kind, info.GetName())
+			}
+
 			parameterization = &workspace.Parameterization{
 				Name:    info.Parameterization.Name,
 				Version: sv,
 				Value:   info.Parameterization.Value,
+				Kind:    kind,
 			}
 		}
 

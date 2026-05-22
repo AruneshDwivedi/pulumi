@@ -1372,6 +1372,8 @@ export class Parameterization extends jspb.Message {
     getValue_asU8(): Uint8Array;
     getValue_asB64(): string;
     setValue(value: Uint8Array | string): Parameterization;
+    getKind(): string;
+    setKind(value: string): Parameterization;
 
     serializeBinary(): Uint8Array;
     toObject(includeInstance?: boolean): Parameterization.AsObject;
@@ -1388,6 +1390,7 @@ export namespace Parameterization {
         name: string,
         version: string,
         value: Uint8Array | string,
+        kind: string,
     }
 }
 

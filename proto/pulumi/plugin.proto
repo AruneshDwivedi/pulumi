@@ -48,6 +48,7 @@ message PackageParameterization {
     string name = 1; // the parameterized package name.
     string version = 2; // the parameterized package version.
     bytes value = 3; // the parameter value for the parameterized package.
+    string kind = 4; // the parameterization kind: "extension" extends the base plugin; empty replaces it.
 }
 
 // PackageDependency is information about a package that a program may depend upon.

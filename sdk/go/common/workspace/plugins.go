@@ -1054,6 +1054,31 @@ func SortPackageDescriptors(x PackageDescriptor, y PackageDescriptor) int {
 	}
 }
 
+// ParameterizationKind distinguishes a replacement parameterization, where the
+// parameterized package supplants the base plugin as a distinct package, from an
+// extension parameterization, where the package extends the base plugin in place.
+type ParameterizationKind string
+
+const (
+	// ParameterizationReplacement is the zero value: the parameterized package
+	// replaces the base plugin as a distinct package.
+	ParameterizationReplacement ParameterizationKind = ""
+	// ParameterizationExtension marks a parameterization that extends its base
+	// plugin rather than replacing it; an extension shares the base plugin's
+	// source and is not a separate provider.
+	ParameterizationExtension ParameterizationKind = "extension"
+)
+
+// Valid reports whether k is a recognized parameterization kind.
+func (k ParameterizationKind) Valid() bool {
+	switch k {
+	case ParameterizationReplacement, ParameterizationExtension:
+		return true
+	default:
+		return false
+	}
+}
+
 // A Parameterization may be applied to a supporting plugin to yield a package.
 type Parameterization struct {
 	// The name of the package that will be produced by the parameterization.
@@ -1063,6 +1088,8 @@ type Parameterization struct {
 	// A plugin-dependent bytestring representing the value of the parameter to be
 	// passed to the plugin.
 	Value []byte
+	// Kind distinguishes a replacement parameterization from an extension.
+	Kind ParameterizationKind
 }
 
 // PluginSpec is a resolved plugin, ready for download.

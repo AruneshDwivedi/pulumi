@@ -2545,6 +2545,7 @@ type Parameterization struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`       // the parameterized package name.
 	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"` // the parameterized package version.
 	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`     // the parameter value for the parameterized package.
+	Kind          string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`       // the parameterization kind: "extension" extends the base plugin, empty replaces it.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2598,6 +2599,13 @@ func (x *Parameterization) GetValue() []byte {
 		return x.Value
 	}
 	return nil
+}
+
+func (x *Parameterization) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 type RegisterResourceHookRequest struct {
@@ -3360,11 +3368,12 @@ const file_pulumi_resource_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"+\n" +
 	"\x17RegisterPackageResponse\x12\x10\n" +
-	"\x03ref\x18\x01 \x01(\tR\x03ref\"V\n" +
+	"\x03ref\x18\x01 \x01(\tR\x03ref\"j\n" +
 	"\x10Parameterization\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\"\xa5\x01\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind\"\xa5\x01\n" +
 	"\x1bRegisterResourceHookRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
 	"\bcallback\x18\x02 \x01(\v2\x13.pulumirpc.CallbackR\bcallback\x12\x1c\n" +

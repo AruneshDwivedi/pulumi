@@ -127,20 +127,24 @@ class PackageParameterization(google.protobuf.message.Message):
     NAME_FIELD_NUMBER: builtins.int
     VERSION_FIELD_NUMBER: builtins.int
     VALUE_FIELD_NUMBER: builtins.int
+    KIND_FIELD_NUMBER: builtins.int
     name: builtins.str
     """the parameterized package name."""
     version: builtins.str
     """the parameterized package version."""
     value: builtins.bytes
     """the parameter value for the parameterized package."""
+    kind: builtins.str
+    """the parameterization kind: "extension" extends the base plugin; empty replaces it."""
     def __init__(
         self,
         *,
         name: builtins.str = ...,
         version: builtins.str = ...,
         value: builtins.bytes = ...,
+        kind: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["name", b"name", "value", b"value", "version", b"version"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["kind", b"kind", "name", b"name", "value", b"value", "version", b"version"]) -> None: ...
 
 global___PackageParameterization = PackageParameterization
 

@@ -246,6 +246,11 @@
                     "description": "The parameter for the provider.",
                     "type": "string",
                     "contentEncoding": "base64"
+                },
+                "kind": {
+                    "description": "Distinguishes an extension parameterization from a replacement one (the default).",
+                    "type": "string",
+                    "enum": ["", "extension"]
                 }
             }
         },

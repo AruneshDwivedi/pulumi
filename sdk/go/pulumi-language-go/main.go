@@ -705,6 +705,7 @@ func (m *modInfo) getPackage(moduleRoot string) (*pulumirpc.PackageDependency, e
 			Name:    pulumiPlugin.Parameterization.Name,
 			Version: pulumiPlugin.Parameterization.Version,
 			Value:   pulumiPlugin.Parameterization.Value,
+			Kind:    pulumiPlugin.Parameterization.Kind,
 		}
 	}
 
