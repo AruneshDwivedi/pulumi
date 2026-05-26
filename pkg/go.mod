@@ -102,6 +102,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.22.3
 	github.com/spf13/afero v1.9.5
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e
+	go.opentelemetry.io/collector/pdata v1.58.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/bridge/opentracing v1.33.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
@@ -272,7 +273,6 @@ require (
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/collector/featuregate v1.58.0 // indirect
-	go.opentelemetry.io/collector/pdata v1.58.0 // indirect
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.49.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.49.0 // indirect

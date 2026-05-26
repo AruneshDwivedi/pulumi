@@ -109,7 +109,10 @@ func StartLogging(
 		Level: slog.LevelDebug,
 	})
 
-	logging.SetSinkHandler(l.handler)
+	logging.SetSinkHandler(NewPropertySinkHandler(l.handler))
+	logging.SetPrimaryWrapper(func(h slog.Handler) slog.Handler {
+		return NewPropertyPrimaryHandler(h)
+	})
 	currentLogger = l
 	return l, nil
 }
@@ -195,6 +198,7 @@ func (l *Logger) Close() error {
 		return nil
 	}
 	logging.SetSinkHandler(nil)
+	logging.SetPrimaryWrapper(nil)
 	if currentLogger == l {
 		currentLogger = nil
 	}
