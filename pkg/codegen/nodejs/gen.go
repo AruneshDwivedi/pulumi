@@ -2956,6 +2956,11 @@ func (mod *modContext) genUtilitiesFile(w io.Writer) error {
 		isExtension := param.Kind == schema.ParameterizationExtension
 		base64Parameter := base64.StdEncoding.EncodeToString(param.Parameter)
 
+		extensionLine := ""
+		if isExtension {
+			extensionLine = "\n\t\textension: true,"
+		}
+
 		_, err = fmt.Fprintf(w, `
 export async function getPackage(): Promise<string | undefined> {
 	return runtime.registerPackage({
@@ -2964,8 +2969,7 @@ export async function getPackage(): Promise<string | undefined> {
 		baseProviderDownloadUrl: "%s",
 		packageName: "%s",
 		packageVersion: "%s",
-		base64Parameter: "%s",
-		extension: %t,
+		base64Parameter: "%s",%s
 	});
 }
 `,
@@ -2975,7 +2979,7 @@ export async function getPackage(): Promise<string | undefined> {
 			def.Name,
 			def.Version,
 			base64Parameter,
-			isExtension)
+			extensionLine)
 	}
 
 	return err

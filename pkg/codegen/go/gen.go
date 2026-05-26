@@ -5413,8 +5413,7 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 			Parameterization: &pulumirpc.Parameterization{
 				Name: %q,
 				Version: %q,
-				Value: parameter,
-				Kind: %q,
+				Value: parameter,%s
 			},
 		}, nil
 	})
@@ -5424,12 +5423,16 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 		param := p.Parameterization
 		value := base64.StdEncoding.EncodeToString(param.Parameter)
 		key := fmt.Sprintf("%s:%s", p.Name, p.Version.String())
+		kindLine := ""
+		if param.Kind != "" {
+			kindLine = fmt.Sprintf("\n\t\t\t\tKind: %q,", string(param.Kind))
+		}
 		_, err = fmt.Fprintf(w, packageRefTemplate,
 			key,
 			value,
 			param.BaseProvider.Name, param.BaseProvider.Version.String(), p.PluginDownloadURL,
 			p.Name, p.Version.String(),
-			string(param.Kind),
+			kindLine,
 		)
 		if err != nil {
 			return err

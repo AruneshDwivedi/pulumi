@@ -558,6 +558,11 @@ def get_version():
 		p := pkg.Parameterization
 		param := base64.StdEncoding.EncodeToString(p.Parameter)
 
+		kindLine := ""
+		if p.Kind != "" {
+			kindLine = fmt.Sprintf("\n\t\t\t\t\t\t\tkind=%q,", string(p.Kind))
+		}
+
 		_, err = fmt.Fprintf(buffer, `
 _package_lock = asyncio.Lock()
 _package_ref = ...
@@ -571,8 +576,7 @@ async def get_package():
 					parameterization = resource_pb2.Parameterization(
 						name=%q,
 						version=get_version(),
-						value=base64.b64decode(%q),
-						kind=%q,
+						value=base64.b64decode(%q),%s
 					)
 					registerPackageResponse = monitor.RegisterPackage(
 						resource_pb2.RegisterPackageRequest(
@@ -588,7 +592,7 @@ async def get_package():
 		raise Exception("The Pulumi CLI does not support parameterization. Please update the Pulumi CLI.")
 	return _package_ref
 	`,
-			pkg.Name, param, string(p.Kind), p.BaseProvider.Name, p.BaseProvider.Version)
+			pkg.Name, param, kindLine, p.BaseProvider.Name, p.BaseProvider.Version)
 		if err != nil {
 			return nil, err
 		}
