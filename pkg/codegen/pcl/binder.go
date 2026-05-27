@@ -73,6 +73,9 @@ type bindOptions struct {
 	// which refer to a component resource in a relative directory
 	dirPath                string
 	componentProgramBinder ComponentProgramBinder
+	// extraScopeVariables, if non-empty, are additional variables to define in the binder's root scope before
+	// binding the input file. Used by snippet bindings to inject references to resources owned by another source.
+	extraScopeVariables map[string]*model.Variable
 }
 
 func (opts bindOptions) modelOptions() []model.BindOption {
@@ -152,6 +155,15 @@ func ComponentBinder(binder ComponentProgramBinder) BindOption {
 	}
 }
 
+// ExtraScopeVariables returns a BindOption that defines additional variables in the binder's root scope before
+// the input file is bound. Used by snippet bindings to inject references to resources owned by another source so
+// expressions like `someResource.someProp` can typecheck without the binder seeing a `resource` block for them.
+func ExtraScopeVariables(extras map[string]*model.Variable) BindOption {
+	return func(options *bindOptions) {
+		options.extraScopeVariables = extras
+	}
+}
+
 // NonStrictBindOptions returns a set of bind options that make the binder lenient about type checking.
 // Changing errors into warnings when possible
 func NonStrictBindOptions() []BindOption {
@@ -197,6 +209,11 @@ func bindInputFile(file *syntax.File, opts ...BindOption) (
 	}
 	b.root.DefineFunction(Invoke, model.NewFunction(model.GenericFunctionSignature(b.bindInvokeSignature)))
 	b.root.DefineFunction(Call, model.NewFunction(model.GenericFunctionSignature(b.bindCallSignature)))
+	// Define any external scope variables supplied by the caller (e.g. resources owned by another source that
+	// this snippet references). The caller chooses each variable's VariableType.
+	for name, v := range options.extraScopeVariables {
+		b.root.Define(name, v)
+	}
 
 	var diagnostics hcl.Diagnostics
 	args := make([]*model.Attribute, 0, len(file.Body.Attributes))

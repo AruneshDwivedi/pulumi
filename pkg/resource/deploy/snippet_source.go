@@ -19,12 +19,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
 	hclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -74,6 +77,34 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 	contract.Assertf(len(parser.Files) == 1, "Should be one PCL file")
 	file := parser.Files[0]
 
+	// Parse every reference URN up front so we can both inject scope variables for the binder and wait on the
+	// broker at evaluation time. Each entry maps the HCL identifier used inside the snippet to the URN it
+	// resolves to.
+	type refEntry struct {
+		urn resource.URN
+	}
+	refs := make(map[string]refEntry, len(s.snippet.References))
+	for name, raw := range s.snippet.References {
+		urn, err := resource.ParseURN(raw)
+		if err != nil {
+			return promise.Errorf[struct{}]("invalid URN for reference %q: %w", name, err)
+		}
+		refs[name] = refEntry{urn: urn}
+	}
+
+	// Build the binder-side variables. Today these are typed as DynamicType so the binder accepts any traversal;
+	// the runtime SetVariable below provides the actual shape.
+	var extras map[string]*model.Variable
+	if len(refs) > 0 {
+		extras = make(map[string]*model.Variable, len(refs))
+		for name := range refs {
+			extras[name] = &model.Variable{
+				Name:         name,
+				VariableType: model.DynamicType,
+			}
+		}
+	}
+
 	// Lookup the resource type in the provider schema and bind the snippet code to it.
 	var parameterization *schema.ParameterizationDescriptor
 	if s.snippet.Descriptor.Parameterization != nil {
@@ -102,7 +133,11 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		return promise.Errorf[struct{}]("resource type %q not found in package %q", s.snippet.Type, descriptor.Name)
 	}
 
-	attributes, resType, diags := pcl.BindResource(file, res, pcl.Loader(s.loader))
+	bindOpts := []pcl.BindOption{pcl.Loader(s.loader)}
+	if len(extras) > 0 {
+		bindOpts = append(bindOpts, pcl.ExtraScopeVariables(extras))
+	}
+	attributes, resType, diags := pcl.BindResource(file, res, bindOpts...)
 	if diags.HasErrors() {
 		return promise.Errorf[struct{}]("binding resource: %v", diags)
 	}
@@ -158,6 +193,45 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			s.workingDir, s.rootDir,
 			infoResp.Organization, infoResp.Project, infoResp.Stack,
 			nil, s.lookupFunction, nil, s.invoke, nil)
+
+		// Resolve each Snippet.References entry by waiting on the URN broker. Wait in parallel; if any URN's
+		// promise rejects, fail the whole snippet. Once all resolve, inject the cty-converted outputs as scope
+		// variables so traversals like `comp.value` find them at evaluation time.
+		if len(refs) > 0 {
+			if s.broker == nil {
+				cts.Reject(errors.New("snippet has References but no URNBroker is configured"))
+				return
+			}
+			grp, gctx := errgroup.WithContext(context.TODO())
+			resolved := make(map[string]resource.PropertyMap, len(refs))
+			var resolvedMu sync.Mutex
+			for name, ref := range refs {
+				name, ref := name, ref
+				grp.Go(func() error {
+					outs, err := s.broker.Get(ref.urn).Result(gctx)
+					if err != nil {
+						return fmt.Errorf("waiting for reference %q (%s): %w", name, ref.urn, err)
+					}
+					resolvedMu.Lock()
+					resolved[name] = outs
+					resolvedMu.Unlock()
+					return nil
+				})
+			}
+			if err := grp.Wait(); err != nil {
+				cts.Reject(err)
+				return
+			}
+			for name, outs := range resolved {
+				ctyVal, err := pclruntime.PropertyValueToCty(context.TODO(), nil, resource.NewProperty(outs))
+				if err != nil {
+					cts.Reject(fmt.Errorf("converting outputs for reference %q: %w", name, err))
+					return
+				}
+				evalCtx.SetVariable(name, ctyVal)
+			}
+		}
+
 		props, poison, diags := evalCtx.EvaluateObject(attributes, resType, res.InputProperties)
 		if poison != nil {
 			cts.Reject(fmt.Errorf("snippet evaluation poisoned: %v", *poison))
