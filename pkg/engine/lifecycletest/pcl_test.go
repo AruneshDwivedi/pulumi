@@ -708,3 +708,110 @@ func TestPclSnippetInvoke(t *testing.T) {
 		"message": resource.NewProperty("echoed: hi"),
 	}, res.Inputs)
 }
+
+// TestPclSnippetResourceReference checks that a snippet can reference a resource registered by the
+// main program by its logical name (declared in Snippet.References) and read one of its output
+// properties as an input to the snippet's own resource.
+func TestPclSnippetResourceReference(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "message": { "type": "string" }
+      },
+      "requiredInputs": ["message"]
+    },
+    "pkgA:index:Comp": {
+      "isComponent": true,
+      "inputProperties": {
+        "value": { "type": "string" }
+      },
+      "requiredInputs": ["value"],
+      "properties": {
+        "value": { "type": "string" }
+      },
+      "required": ["value"]
+    }
+  }
+}`
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+				ConstructF: func(
+					_ context.Context, req plugin.ConstructRequest, _ *deploytest.ResourceMonitor,
+				) (plugin.ConstructResponse, error) {
+					return plugin.ConstructResponse{
+						URN:     resource.URN("urn:pulumi:test::test::pkgA:index:Comp::comp"),
+						Outputs: resource.PropertyMap{"value": req.Inputs["value"]},
+					}, nil
+				},
+			}, nil
+		}),
+	}
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		_, err := monitor.RegisterResource("pkgA:index:Comp", "comp", false, deploytest.ResourceOptions{
+			Remote: true,
+			Inputs: resource.PropertyMap{"value": resource.NewProperty("hello")},
+		})
+		return err
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			References: map[string]string{
+				"comp": "urn:pulumi:test::test::pkgA:index:Comp::comp",
+			},
+			Code: `message = comp.value`,
+		},
+	}
+
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	var res *resource.State
+	for _, r := range snap.Resources {
+		if r.Type == "pkgA:index:res" {
+			res = r
+			break
+		}
+	}
+	require.NotNil(t, res, "snippet resource should have been created")
+	require.Equal(t, resource.PropertyMap{
+		"message": resource.NewProperty("hello"),
+	}, res.Inputs)
+}
