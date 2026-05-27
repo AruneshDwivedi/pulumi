@@ -934,7 +934,7 @@ func newUpdateSource(ctx context.Context,
 	// Now create sources for _any_ snippets in the snapshot and mux them with the main source.
 	if target.Snapshot != nil && len(target.Snapshot.Snippets) > 0 {
 		// We need a loader for snippets
-		loader := schema.NewPluginLoader(opts.Host)
+		loader := schema.NewPluginLoader(plugctx.Host)
 
 		snippetSources := make([]func(string) *promise.Promise[struct{}], len(target.Snapshot.Snippets))
 		for i, snippet := range target.Snapshot.Snippets {

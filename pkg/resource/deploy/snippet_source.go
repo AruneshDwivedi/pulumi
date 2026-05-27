@@ -56,15 +56,6 @@ func NewSnippetSource(s resource.Snippet,
 	return src.run
 }
 
-// Next drives the snippet iterator through a two-step protocol:
-//
-//  1. First call: emits a default provider registration for the snippet's package and returns
-//     immediately. The done channel is stored so we can read the provider result later.
-//
-//  2. Second call: blocks until the provider registration completes, then emits the resource
-//     registration event with the provider reference filled in.
-//
-//  3. Third call (and beyond): returns nil to signal that the iterator is exhausted.
 func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 	// Bind the snippet code
 	input := strings.NewReader(s.snippet.Code)
@@ -246,11 +237,12 @@ func (s *snippet) lookupFunction(ctx context.Context, token string) (*schema.Fun
 }
 
 func (s *snippet) getPackageRefFromToken(token string) (string, error) {
+	spkg, _, _, _ := pcl.DecomposeToken(s.snippet.Type, hcl.Range{})
 	pkg, _, _, diags := pcl.DecomposeToken(token, hcl.Range{})
 	contract.Assertf(!diags.HasErrors(), "invalid token format for resource token %s", token)
 	// If the token is for the same package as the snippet, we can return the package ref we got when registering the
 	// snippet.
-	if pkg == s.snippet.Descriptor.Name {
+	if pkg == spkg {
 		return s.packageRef, nil
 	}
 	// Else we don't have a ref, just return blank.
