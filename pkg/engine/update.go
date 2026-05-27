@@ -946,7 +946,7 @@ func newUpdateSource(ctx context.Context,
 			snippetSources[i] = deploy.NewSnippetSource(
 				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd, urnBroker)
 		}
-		program = deploy.NewMuxSource(program, snippetSources...)
+		program = deploy.NewMuxSource(ctx, program, snippetSources...)
 	}
 
 	// If that succeeded, create a new source that will perform interpretation of the compiled program.

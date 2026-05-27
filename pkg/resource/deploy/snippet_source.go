@@ -340,14 +340,21 @@ func (s *snippet) invoke(
 	return resp, err
 }
 
-// MuxSource creates a source that multiplexes the given sources, interleaving their events
-// and returning nil only when all sources are exhausted. This is used to run PCL snippets
-// alongside the main program source.
+// NewMuxSource creates a source that runs main alongside zero or more secondary sources, returning a single
+// promise that resolves only after every source has finished. Errors from individual sources are joined with
+// [errors.Join].
+//
+// ctx scopes how long the multiplexer is willing to wait. If it is cancelled before every source has resolved,
+// the returned promise rejects with the joined errors so far (including ctx.Err()) and stops waiting. The
+// individual source goroutines are not interrupted directly; they are expected to react to cancellation through
+// their own channels (typically the resource monitor's shutdown signal).
 func NewMuxSource(
+	ctx context.Context,
 	main func(string) *promise.Promise[struct{}],
 	sources ...func(string) *promise.Promise[struct{}],
 ) func(string) *promise.Promise[struct{}] {
 	src := &muxSource{
+		ctx:     ctx,
 		main:    main,
 		sources: sources,
 	}
@@ -355,6 +362,7 @@ func NewMuxSource(
 }
 
 type muxSource struct {
+	ctx     context.Context //nolint:containedctx // bounded to one engine update; passed by NewMuxSource
 	main    func(string) *promise.Promise[struct{}]
 	sources []func(string) *promise.Promise[struct{}]
 }
@@ -362,40 +370,42 @@ type muxSource struct {
 func (m *muxSource) run(input string) *promise.Promise[struct{}] {
 	cts := &promise.CompletionSource[struct{}]{}
 
-	ps := make([]*promise.Promise[struct{}], 1+len(m.sources))
-	ps[0] = m.main(input)
-	for i, src := range m.sources {
-		ps[i+1] = src(input)
+	promises := make([]*promise.Promise[struct{}], 0, 1+len(m.sources))
+	promises = append(promises, m.main(input))
+	for _, s := range m.sources {
+		promises = append(promises, s(input))
 	}
 
 	go func() {
-		for {
-			// Wait for all the sources to complete.
-			allDone := true
-			for _, p := range ps {
-				_, _, ok := p.TryResult()
-				if !ok {
-					allDone = false
+		// Block until every promise resolves or our ctx is cancelled. Each waiter is independent so a slow
+		// source doesn't delay error reporting for fast ones, but we still wait for all of them to settle
+		// before fulfilling so callers don't observe a partial completion.
+		errs := make([]error, len(promises))
+		var wg sync.WaitGroup
+		for i, p := range promises {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := p.Result(m.ctx); err != nil {
+					errs[i] = err
 				}
-			}
-			if allDone {
-				break
+			}()
+		}
+		wg.Wait()
+
+		var nonNil []error
+		for _, e := range errs {
+			if e != nil {
+				nonNil = append(nonNil, e)
 			}
 		}
-		var errs []error
-		for _, p := range ps {
-			_, err, ok := p.TryResult()
-			contract.Assertf(ok, "All promises should be done at this point")
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}
-		if len(errs) == 0 {
+		switch len(nonNil) {
+		case 0:
 			cts.Fulfill(struct{}{})
-		} else if len(errs) == 1 {
-			cts.Reject(errs[0])
-		} else {
-			cts.Reject(errors.Join(errs...))
+		case 1:
+			cts.Reject(nonNil[0])
+		default:
+			cts.Reject(errors.Join(nonNil...))
 		}
 	}()
 
