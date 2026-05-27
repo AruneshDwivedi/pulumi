@@ -42,17 +42,22 @@ type snippet struct {
 	loader     schema.ReferenceLoader
 	rootDir    string
 	workingDir string
+	// broker is the per-update URN broker; nil if the caller does not need cross-source URN coordination. Used by
+	// the snippet to wait on (and resolve traversals of) the resources named in Snippet.References.
+	broker *URNBroker
 
 	monitor    pulumirpc.ResourceMonitorClient
 	packageRef string
 }
 
-// NewSnippetSource creates a Source that registers a single PCL resource snippet.
+// NewSnippetSource creates a Source that registers a single PCL resource snippet. broker, if non-nil, is the
+// per-update URN broker the snippet will consult to wait for resources named in s.References.
 func NewSnippetSource(s resource.Snippet,
 	loader schema.ReferenceLoader,
 	rootDir, workingDir string,
+	broker *URNBroker,
 ) func(string) *promise.Promise[struct{}] {
-	src := &snippet{snippet: &s, loader: loader, rootDir: rootDir, workingDir: workingDir}
+	src := &snippet{snippet: &s, loader: loader, rootDir: rootDir, workingDir: workingDir, broker: broker}
 	return src.run
 }
 

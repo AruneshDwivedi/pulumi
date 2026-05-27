@@ -101,6 +101,9 @@ type EvalSourceOptions struct {
 // NewEvalSource returns a planning source that fetches resources by evaluating a package with a set of args and
 // a confgiuration map.  This evaluation is performed using the given plugin context and may optionally use the
 // given plugin host (or the default, if this is nil).  Note that closing the eval source also closes the host.
+//
+// urnBroker is the per-update broker the resource monitor will use to publish RegisterResource outputs. It may be
+// nil for callers that don't need cross-source URN coordination; in that case the monitor simply does not publish.
 func NewEvalSource(
 	plugctx *plugin.Context,
 	runinfo *EvalRunInfo,
@@ -108,6 +111,7 @@ func NewEvalSource(
 	resourceHooks *ResourceHooks,
 	opts EvalSourceOptions,
 	panicErrs chan<- error,
+	urnBroker *URNBroker,
 	runner func(string) *promise.Promise[struct{}],
 ) Source {
 	return &evalSource{
@@ -117,6 +121,7 @@ func NewEvalSource(
 		resourceHooks:       resourceHooks,
 		opts:                opts,
 		panicErrs:           panicErrs,
+		urnBroker:           urnBroker,
 		runner:              runner,
 	}
 }
@@ -129,6 +134,10 @@ type evalSource struct {
 	opts                EvalSourceOptions                              // options for the evaluation source.
 	// channel for reporting panics from goroutines
 	panicErrs chan<- error
+
+	// urnBroker is the per-update broker the resource monitor publishes RegisterResource outputs to. Nil when
+	// cross-source URN coordination is not in use.
+	urnBroker *URNBroker
 
 	// the function to run the evaluation with.
 	runner func(resourceMonitorTarget string) *promise.Promise[struct{}]
@@ -444,6 +453,10 @@ type resmon struct {
 
 	// the organization name for the deployment.
 	organization string
+
+	// urnBroker, if non-nil, is the per-update broker the monitor publishes RegisterResource outputs to so
+	// concurrent sources (e.g. snippet sources) can wait for resources registered by other sources.
+	urnBroker *URNBroker
 }
 
 var _ SourceResourceMonitor = (*resmon)(nil)
@@ -501,6 +514,7 @@ func newResourceMonitor(
 		resourceTransforms:  map[resource.URN][]TransformFunction{},
 		packageRefMap:       map[string]providers.ProviderRequest{},
 		grpcDialOptions:     src.plugctx.DialOptions,
+		urnBroker:           src.urnBroker,
 	}
 
 	// Fire up a gRPC server and start listening for incomings.
@@ -2737,6 +2751,12 @@ func (rm *resmon) RegisterResource(ctx context.Context,
 			}
 		}
 		outputs = filtered
+	}
+
+	// Publish the registered outputs on the URN broker so other concurrent sources waiting on this URN can wake up.
+	// For local components the outputs aren't final yet — they'll be published by RegisterResourceOutputs below.
+	if rm.urnBroker != nil && result.State.URN != "" && (custom || remote) {
+		rm.urnBroker.Resolve(result.State.URN, outputs)
 	}
 
 	// TODO(@platform):

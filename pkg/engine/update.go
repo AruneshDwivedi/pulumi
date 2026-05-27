@@ -931,6 +931,11 @@ func newUpdateSource(ctx context.Context,
 
 	program := deploy.NewProgramSource(plugctx, runinfo, evalOpts, panicErrs)
 
+	// Create a URN broker so concurrent sources (the program + any snippet sources below) can wait for each
+	// other's RegisterResource calls. The resource monitor publishes outputs on the broker; snippet sources
+	// consume them when their Snippet.References needs to read another resource's outputs.
+	urnBroker := deploy.NewURNBroker()
+
 	// Now create sources for _any_ snippets in the snapshot and mux them with the main source.
 	if target.Snapshot != nil && len(target.Snapshot.Snippets) > 0 {
 		// We need a loader for snippets
@@ -939,14 +944,14 @@ func newUpdateSource(ctx context.Context,
 		snippetSources := make([]func(string) *promise.Promise[struct{}], len(target.Snapshot.Snippets))
 		for i, snippet := range target.Snapshot.Snippets {
 			snippetSources[i] = deploy.NewSnippetSource(
-				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd)
+				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd, urnBroker)
 		}
 		program = deploy.NewMuxSource(program, snippetSources...)
 	}
 
 	// If that succeeded, create a new source that will perform interpretation of the compiled program.
 	return deploy.NewEvalSource(plugctx, runinfo,
-		defaultProviderVersions, resourceHooks, evalOpts, panicErrs, program), nil
+		defaultProviderVersions, resourceHooks, evalOpts, panicErrs, urnBroker, program), nil
 }
 
 func update(
