@@ -1,0 +1,1 @@
+<{%fg 1%}>error: <{%reset%}><{%reset%}>binding resource: <snippet>:0,0-12: Missing required input "propB"; <{%reset%}>
