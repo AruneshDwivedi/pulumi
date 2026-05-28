@@ -97,7 +97,7 @@ func TestRedactSecretsInLog(t *testing.T) {
 	require.NoError(t, err)
 	logData := append(line, '\n')
 
-	redacted := redactSecretsInLog(logData)
+	redacted := processLogForShare(logData, true)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(redacted, &got))
@@ -132,7 +132,7 @@ func TestRedactSecretsNested(t *testing.T) {
 	line, err := json.Marshal(rec)
 	require.NoError(t, err)
 
-	redacted := redactSecretsInLog(append(line, '\n'))
+	redacted := processLogForShare(append(line, '\n'), true)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(redacted, &got))
@@ -151,7 +151,7 @@ func TestRedactSecretsNonJSON(t *testing.T) {
 
 	// Non-JSON lines should pass through unchanged.
 	input := []byte("plain text log line\n{bad json\n")
-	result := redactSecretsInLog(input)
+	result := processLogForShare(input, true)
 	assert.Equal(t, input, result)
 }
 
@@ -162,7 +162,7 @@ func TestRedactSecretsNoSecrets(t *testing.T) {
 	line, _ := json.Marshal(rec)
 	input := append(line, '\n')
 
-	result := redactSecretsInLog(input)
+	result := processLogForShare(input, true)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(result, &got))
@@ -219,7 +219,7 @@ func TestRedactSecretsPreservesMultipleLines(t *testing.T) {
 		buf.WriteByte('\n')
 	}
 
-	result := redactSecretsInLog(buf.Bytes())
+	result := processLogForShare(buf.Bytes(), true)
 	lines := strings.Split(strings.TrimSuffix(string(result), "\n"), "\n")
 	assert.Len(t, lines, 3)
 

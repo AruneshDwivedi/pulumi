@@ -37,7 +37,6 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/engine/encryptedlog"
 	pkgWorkspace "github.com/pulumi/pulumi/pkg/v3/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 )
 
@@ -161,9 +160,7 @@ func sharePLOG(
 		return fmt.Errorf("reading decrypted log: %w", err)
 	}
 
-	if redact {
-		plaintext = redactSecretsInLog(plaintext)
-	}
+	plaintext = processLogForShare(plaintext, redact)
 
 	return writeEncryptedLog(outPath, sessionID, sessionKey, plaintext)
 }
@@ -184,9 +181,7 @@ func shareGzip(
 		return fmt.Errorf("decompressing log: %w", err)
 	}
 
-	if redact {
-		plaintext = redactSecretsInLog(plaintext)
-	}
+	plaintext = processLogForShare(plaintext, redact)
 
 	return writeEncryptedLog(outPath, sessionID, sessionKey, plaintext)
 }
@@ -243,9 +238,11 @@ func createEncryptionSessionFromAPI(ctx context.Context, ws pkgWorkspace.Context
 	return resp.SessionID, keyBytes, nil
 }
 
-// redactSecretsInLog processes each JSON line in the log and replaces
-// secret property values with "[secret]".
-func redactSecretsInLog(data []byte) []byte {
+// processLogForShare processes each JSON line in the log, formatting
+// slog-style structured args back into the message string. When redact
+// is true, complex arg values and Pulumi secret markers are replaced
+// with placeholders.
+func processLogForShare(data []byte, redact bool) []byte {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var result bytes.Buffer
 	for scanner.Scan() {
@@ -263,48 +260,19 @@ func redactSecretsInLog(data []byte) []byte {
 			continue
 		}
 
-		redactSecretsInValue(rec)
+		formatSlogArgs(rec, redact)
+		if redact {
+			redactSecretsInValue(rec)
+		}
 
-		redacted, err := json.Marshal(rec)
+		out, err := json.Marshal(rec)
 		if err != nil {
 			result.Write(line)
 		} else {
-			result.Write(redacted)
+			result.Write(out)
 		}
 		result.WriteByte('\n')
 	}
 	return result.Bytes()
 }
 
-// redactSecretsInValue recursively walks a JSON value and replaces any
-// secret objects (identified by the Pulumi secret signature) with a
-// redacted placeholder.
-func redactSecretsInValue(v any) {
-	switch val := v.(type) {
-	case map[string]any:
-		if isSecretValue(val) {
-			delete(val, "ciphertext")
-			delete(val, "plaintext")
-			delete(val, "value")
-			val["plaintext"] = "[secret]"
-			return
-		}
-		for _, child := range val {
-			redactSecretsInValue(child)
-		}
-	case []any:
-		for _, child := range val {
-			redactSecretsInValue(child)
-		}
-	}
-}
-
-// isSecretValue returns true if the map represents a Pulumi secret value.
-func isSecretValue(m map[string]any) bool {
-	sigVal, ok := m[resource.SigKey]
-	if !ok {
-		return false
-	}
-	sigStr, ok := sigVal.(string)
-	return ok && sigStr == resource.SecretSig
-}
