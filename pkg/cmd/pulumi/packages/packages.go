@@ -66,13 +66,12 @@ func BindSpec(spec schema.PackageSpec) (*schema.Package, error) {
 
 // InstallPackage installs a package to the project by generating an SDK and linking it.
 // It returns the path to the installed package.
-// When asExtension is true, the schema's Parameterization is marked as an extension
-// parameterization before binding so codegen produces extension shape.
 func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.BaseProject, pctx *plugin.Context,
 	language, root, schemaSource string, parameters plugin.ParameterizeParameters,
-	registry registry.Registry, e env.Env, concurrency int, asExtension bool,
+	registry registry.Registry, e env.Env, concurrency int,
 ) (*schema.Package, *workspace.PackageSpec, hcl.Diagnostics, error) {
-	pkgSpec, specOverride, err := SchemaFromSchemaSource(ws, pctx, schemaSource, parameters, registry, e, concurrency)
+	pkgSpec, specOverride, parameterizationName, err := SchemaFromSchemaSource(
+		ws, pctx, schemaSource, parameters, registry, e, concurrency)
 	if err != nil {
 		var diagErr hcl.Diagnostics
 		if errors.As(err, &diagErr) {
@@ -81,13 +80,14 @@ func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.Ba
 		return nil, nil, nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	if asExtension && pkgSpec != nil && pkgSpec.Parameterization != nil {
-		pkgSpec.Parameterization.Kind = schema.ParameterizationExtension
-	}
-
 	pkg, err := BindSpec(*pkgSpec)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to bind schema: %w", err)
+	}
+
+	// Rename to the extension identity.
+	if pkg.ExtensionParameterization != nil && parameterizationName != "" {
+		pkg.Name = parameterizationName
 	}
 
 	tempOut, err := os.MkdirTemp("", "pulumi-package-")
@@ -126,11 +126,6 @@ func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.Ba
 	outName := pkg.Name
 	if pkg.Namespace != "" {
 		outName = pkg.Namespace + "-" + outName
-	}
-	// An extension SDK is named for the extension, not the base provider.
-	if pkg.Parameterization != nil && pkg.Parameterization.Kind == schema.ParameterizationExtension &&
-		pkg.Parameterization.Name != "" {
-		outName = pkg.Parameterization.Name
 	}
 	out = filepath.Join(out, outName)
 
@@ -374,40 +369,40 @@ func SchemaFromSchemaSource(
 	ws pkgWorkspace.Context,
 	pctx *plugin.Context, packageSource string, parameters plugin.ParameterizeParameters, registry registry.Registry,
 	env env.Env, concurrency int,
-) (*schema.PackageSpec, *workspace.PackageSpec, error) {
+) (*schema.PackageSpec, *workspace.PackageSpec, string, error) {
 	var spec schema.PackageSpec
 	if ext := filepath.Ext(packageSource); ext == ".yaml" || ext == ".yml" {
 		if !parameters.Empty() {
-			return nil, nil, errors.New("parameterization arguments are not supported for yaml files")
+			return nil, nil, "", errors.New("parameterization arguments are not supported for yaml files")
 		}
 		f, err := os.ReadFile(packageSource)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		err = yaml.Unmarshal(f, &spec)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		return &spec, nil, nil
+		return &spec, nil, "", nil
 	} else if ext == ".json" {
 		if !parameters.Empty() {
-			return nil, nil, errors.New("parameterization arguments are not supported for json files")
+			return nil, nil, "", errors.New("parameterization arguments are not supported for json files")
 		}
 
 		f, err := os.ReadFile(packageSource)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		err = json.Unmarshal(f, &spec)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		return &spec, nil, nil
+		return &spec, nil, "", nil
 	}
 
 	p, packageSpec, err := ProviderFromSource(ws, pctx, packageSource, registry, env, concurrency)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	defer contract.IgnoreClose(p)
 
@@ -418,7 +413,7 @@ func SchemaFromSchemaSource(
 			Parameters: parameters,
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("parameterize: %w", err)
+			return nil, nil, "", fmt.Errorf("parameterize: %w", err)
 		}
 
 		parameterizationName = resp.Name
@@ -434,24 +429,21 @@ func SchemaFromSchemaSource(
 	schema, err := p.GetSchema(pctx.Request(), request)
 	schemaSpan.End()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	err = json.Unmarshal(schema.Schema, &spec)
 	if err != nil {
-		return nil, nil, err
-	}
-	if parameterizationName != "" && spec.Parameterization != nil {
-		spec.Parameterization.Name = parameterizationName
+		return nil, nil, "", err
 	}
 	pluginSpec, err := workspace.NewPluginDescriptor(pctx.Request(), packageSource, apitype.ResourcePlugin, nil, "", nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if pluginSpec.PluginDownloadURL != "" {
 		spec.PluginDownloadURL = pluginSpec.PluginDownloadURL
 	}
 	setSpecNamespace(&spec, pluginSpec)
-	return &spec, &packageSpec, nil
+	return &spec, &packageSpec, parameterizationName, nil
 }
 
 // ProviderFromSource takes a plugin name or path.

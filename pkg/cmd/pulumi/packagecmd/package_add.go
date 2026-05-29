@@ -148,8 +148,7 @@ from the parameters, as in:
 				parameters,
 				target.reg,
 				env.Global(),
-				0,     /* unbounded concurrency */
-				false, /* not an extension */
+				0, /* unbounded concurrency */
 			)
 			cmdDiag.PrintDiagnostics(pctx.Diag, diags)
 			if err != nil {
@@ -193,10 +192,22 @@ from the parameters, as in:
 			}
 
 			contract.Assertf(packageSpec != nil, "packageSpec should be nil if & only if source is file based")
-			packageSpec.Parameters = parameters.Args
 
 			if target.projectFilePath != nil {
-				target.proj.AddPackage(pkg.Name, *packageSpec)
+				var specToAdd workspace.PackageSpec
+				if pkg.ExtensionParameterization != nil {
+					specToAdd = workspace.PackageSpec{
+						Base: &workspace.PackageSpec{
+							Source:  pkg.ExtensionParameterization.BaseProvider.Name,
+							Version: pkg.ExtensionParameterization.BaseProvider.Version.String(),
+						},
+						Extensions: parameters.Args,
+					}
+				} else {
+					packageSpec.Parameters = parameters.Args
+					specToAdd = *packageSpec
+				}
+				target.proj.AddPackage(pkg.Name, specToAdd)
 
 				fileName := filepath.Base(*target.projectFilePath)
 				// Save the updated project

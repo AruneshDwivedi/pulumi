@@ -563,7 +563,7 @@ func generateAndLinkSdksForPackages(
 			continue
 		}
 
-		pkgSpec, _, err := packages.SchemaFromSchemaSource(
+		pkgSpec, _, parameterizationName, err := packages.SchemaFromSchemaSource(
 			pkgWorkspace.Instance,
 			pctx,
 			pkg.Name,
@@ -594,7 +594,7 @@ func generateAndLinkSdksForPackages(
 			return fmt.Errorf("error generating sdk: %w", err)
 		}
 
-		sdkOut := filepath.Join(targetDirectory, "sdks", pkg.Parameterization.Name)
+		sdkOut := filepath.Join(targetDirectory, "sdks", parameterizationName)
 		err = fsutil.CopyFile(sdkOut, filepath.Join(tempOut, language), nil)
 		if err != nil {
 			return fmt.Errorf("failed to move SDK to project: %w", err)
@@ -607,7 +607,7 @@ func generateAndLinkSdksForPackages(
 
 		packagesToLink = append(packagesToLink, packages.PackageToLink{Pkg: pkgSchema, Out: sdkOut})
 
-		fmt.Fprintf(stdout, "Generated local SDK for package '%s:%s'\n", pkg.Name, pkg.Parameterization.Name)
+		fmt.Fprintf(stdout, "Generated local SDK for package '%s:%s'\n", pkg.Name, parameterizationName)
 	}
 
 	if err := packages.LinkPackages(&packages.LinkPackagesContext{

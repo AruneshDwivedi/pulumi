@@ -1,0 +1,3 @@
+kind: feat
+body: Support extension-parameterized SDKs in `pulumi package add`. Providers whose schemas declare an extension parameterization produce a typed SDK that layers additional resource types onto an existing provider.
+component: cli/package
