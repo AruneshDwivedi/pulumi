@@ -11140,7 +11140,8 @@ name: jspb.Message.getFieldWithDefault(msg, 1, ""),
 version: jspb.Message.getFieldWithDefault(msg, 2, ""),
 downloadUrl: jspb.Message.getFieldWithDefault(msg, 3, ""),
 checksumsMap: (f = msg.getChecksumsMap()) ? f.toObject(includeInstance, undefined) : [],
-parameterization: (f = msg.getParameterization()) && proto.pulumirpc.Parameterization.toObject(includeInstance, f)
+parameterization: (f = msg.getParameterization()) && proto.pulumirpc.Parameterization.toObject(includeInstance, f),
+extension: (f = msg.getExtension$()) && proto.pulumirpc.Parameterization.toObject(includeInstance, f)
   };
 
   if (includeInstance) {
@@ -11200,6 +11201,11 @@ proto.pulumirpc.RegisterPackageRequest.deserializeBinaryFromReader = function(ms
       reader.readMessage(value,proto.pulumirpc.Parameterization.deserializeBinaryFromReader);
       msg.setParameterization(value);
       break;
+    case 6:
+      var value = new proto.pulumirpc.Parameterization;
+      reader.readMessage(value,proto.pulumirpc.Parameterization.deserializeBinaryFromReader);
+      msg.setExtension$(value);
+      break;
     default:
       reader.skipField();
       break;
@@ -11258,6 +11264,14 @@ proto.pulumirpc.RegisterPackageRequest.serializeBinaryToWriter = function(messag
   if (f != null) {
     writer.writeMessage(
       5,
+      f,
+      proto.pulumirpc.Parameterization.serializeBinaryToWriter
+    );
+  }
+  f = message.getExtension$();
+  if (f != null) {
+    writer.writeMessage(
+      6,
       f,
       proto.pulumirpc.Parameterization.serializeBinaryToWriter
     );
@@ -11376,6 +11390,43 @@ proto.pulumirpc.RegisterPackageRequest.prototype.clearParameterization = functio
  */
 proto.pulumirpc.RegisterPackageRequest.prototype.hasParameterization = function() {
   return jspb.Message.getField(this, 5) != null;
+};
+
+
+/**
+ * optional Parameterization extension = 6;
+ * @return {?proto.pulumirpc.Parameterization}
+ */
+proto.pulumirpc.RegisterPackageRequest.prototype.getExtension$ = function() {
+  return /** @type{?proto.pulumirpc.Parameterization} */ (
+    jspb.Message.getWrapperField(this, proto.pulumirpc.Parameterization, 6));
+};
+
+
+/**
+ * @param {?proto.pulumirpc.Parameterization|undefined} value
+ * @return {!proto.pulumirpc.RegisterPackageRequest} returns this
+*/
+proto.pulumirpc.RegisterPackageRequest.prototype.setExtension$ = function(value) {
+  return jspb.Message.setWrapperField(this, 6, value);
+};
+
+
+/**
+ * Clears the message field making it undefined.
+ * @return {!proto.pulumirpc.RegisterPackageRequest} returns this
+ */
+proto.pulumirpc.RegisterPackageRequest.prototype.clearExtension$ = function() {
+  return this.setExtension$(undefined);
+};
+
+
+/**
+ * Returns whether this field is set.
+ * @return {boolean}
+ */
+proto.pulumirpc.RegisterPackageRequest.prototype.hasExtension$ = function() {
+  return jspb.Message.getField(this, 6) != null;
 };
 
 
@@ -11543,8 +11594,7 @@ proto.pulumirpc.Parameterization.toObject = function(includeInstance, msg) {
   var f, obj = {
 name: jspb.Message.getFieldWithDefault(msg, 1, ""),
 version: jspb.Message.getFieldWithDefault(msg, 2, ""),
-value: msg.getValue_asB64(),
-kind: jspb.Message.getFieldWithDefault(msg, 4, "")
+value: msg.getValue_asB64()
   };
 
   if (includeInstance) {
@@ -11593,10 +11643,6 @@ proto.pulumirpc.Parameterization.deserializeBinaryFromReader = function(msg, rea
       var value = /** @type {!Uint8Array} */ (reader.readBytes());
       msg.setValue(value);
       break;
-    case 4:
-      var value = /** @type {string} */ (reader.readString());
-      msg.setKind(value);
-      break;
     default:
       reader.skipField();
       break;
@@ -11644,13 +11690,6 @@ proto.pulumirpc.Parameterization.serializeBinaryToWriter = function(message, wri
   if (f.length > 0) {
     writer.writeBytes(
       3,
-      f
-    );
-  }
-  f = message.getKind();
-  if (f.length > 0) {
-    writer.writeString(
-      4,
       f
     );
   }
@@ -11732,24 +11771,6 @@ proto.pulumirpc.Parameterization.prototype.getValue_asU8 = function() {
  */
 proto.pulumirpc.Parameterization.prototype.setValue = function(value) {
   return jspb.Message.setProto3BytesField(this, 3, value);
-};
-
-
-/**
- * optional string kind = 4;
- * @return {string}
- */
-proto.pulumirpc.Parameterization.prototype.getKind = function() {
-  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 4, ""));
-};
-
-
-/**
- * @param {string} value
- * @return {!proto.pulumirpc.Parameterization} returns this
- */
-proto.pulumirpc.Parameterization.prototype.setKind = function(value) {
-  return jspb.Message.setProto3StringField(this, 4, value);
 };
 
 

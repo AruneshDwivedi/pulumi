@@ -24,16 +24,15 @@ import (
 )
 
 // extensionSchemaSpec is a minimal extension-parameterized package: it carries
-// a Parameterization with Kind set to extension.
+// an ExtensionParameterization rather than a Parameterization. The presence of
+// that field is the discriminator for extension flavor.
 func extensionSchemaSpec() schema.PackageSpec {
 	return schema.PackageSpec{
 		Name:    "gateway",
 		Version: "1.0.0",
-		Parameterization: &schema.ParameterizationSpec{
-			Name:         "gateway",
+		ExtensionParameterization: &schema.ParameterizationSpec{
 			BaseProvider: schema.BaseProviderSpec{Name: "kubernetes", Version: "4.0.0"},
 			Parameter:    []byte("extension-parameter"),
-			Kind:         schema.ParameterizationExtension,
 		},
 		Resources: map[string]schema.ResourceSpec{
 			"gateway:index:Gateway": {
@@ -48,15 +47,15 @@ func extensionSchemaSpec() schema.PackageSpec {
 }
 
 // TestExtensionParameterizationCodegen checks that an extension-parameterized
-// schema generates a Python SDK whose get_package() registers an extension.
+// schema generates a Python SDK whose get_package() fills the new
+// RegisterPackageRequest.extension field rather than parameterization.
 func TestExtensionParameterizationCodegen(t *testing.T) {
 	t.Parallel()
 
 	pkg, diags, err := schema.BindSpec(extensionSchemaSpec(), nil, schema.ValidationOptions{})
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), "%v", diags)
-	require.NotNil(t, pkg.Parameterization)
-	require.Equal(t, schema.ParameterizationExtension, pkg.Parameterization.Kind)
+	require.NotNil(t, pkg.ExtensionParameterization)
 
 	files, err := GeneratePackage("test", pkg, nil, nil)
 	require.NoError(t, err)
@@ -68,8 +67,8 @@ func TestExtensionParameterizationCodegen(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, utilities, "expected a _utilities.py in the generated SDK")
-	assert.Contains(t, utilities, "parameterization=parameterization",
-		"an extension SDK's get_package() should register a Parameterization")
-	assert.Contains(t, utilities, `kind="extension"`,
-		"an extension SDK should register with the extension kind")
+	assert.Contains(t, utilities, "extension=parameterization",
+		"an extension SDK's get_package() should fill RegisterPackageRequest.extension")
+	assert.NotContains(t, utilities, "parameterization=parameterization",
+		"an extension SDK should not fill the replacement parameterization field")
 }

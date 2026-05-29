@@ -551,17 +551,20 @@ def get_version():
 		return nil, err
 	}
 
-	if pkg.Parameterization != nil {
+	if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
 		// If a parameterized package is being generated then we _need_ to use package references.
-		// Extension and replacement parameterization differ only in the `kind` carried on the
-		// Parameterization message.
-		p := pkg.Parameterization
-		param := base64.StdEncoding.EncodeToString(p.Parameter)
-
-		kindLine := ""
-		if p.Kind != "" {
-			kindLine = fmt.Sprintf("\n\t\t\t\t\t\t\tkind=%q,", string(p.Kind))
+		// A replacement schema fills the RegisterPackageRequest.parameterization field; an
+		// extension fills the RegisterPackageRequest.extension field instead. Schemas carry
+		// either one or the other, never both.
+		var p *schema.Parameterization
+		registerField := "parameterization"
+		if pkg.ExtensionParameterization != nil {
+			p = pkg.ExtensionParameterization
+			registerField = "extension"
+		} else {
+			p = pkg.Parameterization
 		}
+		param := base64.StdEncoding.EncodeToString(p.Parameter)
 
 		_, err = fmt.Fprintf(buffer, `
 _package_lock = asyncio.Lock()
@@ -576,14 +579,14 @@ async def get_package():
 					parameterization = resource_pb2.Parameterization(
 						name=%q,
 						version=get_version(),
-						value=base64.b64decode(%q),%s
+						value=base64.b64decode(%q),
 					)
 					registerPackageResponse = monitor.RegisterPackage(
 						resource_pb2.RegisterPackageRequest(
 							name=%q,
 							version=%q,
 							download_url=get_plugin_download_url(),
-							parameterization=parameterization,
+							%s=parameterization,
 						))
 					_package_ref = registerPackageResponse.ref
 	# TODO: This check is only needed for parameterized providers, normal providers can return None for get_package when we start
@@ -592,7 +595,7 @@ async def get_package():
 		raise Exception("The Pulumi CLI does not support parameterization. Please update the Pulumi CLI.")
 	return _package_ref
 	`,
-			pkg.Name, param, kindLine, p.BaseProvider.Name, p.BaseProvider.Version)
+			pkg.Name, param, p.BaseProvider.Name, p.BaseProvider.Version, registerField)
 		if err != nil {
 			return nil, err
 		}
@@ -1628,7 +1631,7 @@ func (mod *modContext) genResource(res *schema.Resource) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if pkg.Parameterization != nil {
+	if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
 		fmt.Fprintf(w, ",\n            package_ref=_utilities.get_package()")
 	}
 	fmt.Fprintf(w, ")\n\n")
@@ -1889,7 +1892,7 @@ func (mod *modContext) genMethods(w io.Writer, res *schema.Resource) {
 		// If the call is on a parameterized package, make sure we pass the parameter.
 		pkg, err := fun.PackageReference.Definition()
 		contract.AssertNoErrorf(err, "can not load package definition for %s: %s", pkg.Name, err)
-		if pkg.Parameterization != nil {
+		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
 			trailingArgs += ", package_ref=_utilities.get_package()"
 		}
 
@@ -2022,7 +2025,7 @@ func (mod *modContext) genFunction(fun *schema.Function) (string, error) {
 		if err != nil {
 			return err
 		}
-		if pkg.Parameterization != nil {
+		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
 			trailingArgs += ", package_ref=_utilities.get_package()"
 		}
 
@@ -2301,12 +2304,22 @@ func genPulumiPluginFile(pkg *schema.Package) ([]byte, error) {
 	}
 	// For both replacement and extension parameterization the plugin name/version
 	// in pulumi-plugin.json is from the base provider, not the top-level package.
+	// The PulumiParameterizationJSON serialization keeps a "kind" discriminator so
+	// downstream readers can recover which flavor was generated.
 	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
 			Name:    pulumiPlugin.Name,
 			Version: pulumiPlugin.Version,
 			Value:   param.Parameter,
-			Kind:    string(param.Kind),
+		}
+		pulumiPlugin.Name = param.BaseProvider.Name
+		pulumiPlugin.Version = param.BaseProvider.Version.String()
+	} else if param := pkg.ExtensionParameterization; param != nil {
+		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
+			Name:    pulumiPlugin.Name,
+			Version: pulumiPlugin.Version,
+			Value:   param.Parameter,
+			Kind:    "extension",
 		}
 		pulumiPlugin.Name = param.BaseProvider.Name
 		pulumiPlugin.Version = param.BaseProvider.Version.String()
@@ -2404,7 +2417,7 @@ func genPackageMetadata(
 	// Collect the deps into a tuple, where the first
 	// element is the dep name and the second element
 	// is the version constraint.
-	deps, err := calculateDeps(pkg.Parameterization != nil, requires)
+	deps, err := calculateDeps(pkg.Parameterization != nil || pkg.ExtensionParameterization != nil, requires)
 	if err != nil {
 		return "", err
 	}
@@ -3138,7 +3151,7 @@ func generateModuleContextMap(tool string, pkg *schema.Package, info PackageInfo
 
 	// Extension-parameterized packages don't get their own Provider class — they
 	// reuse the base provider their extension was applied to.
-	isExtension := pkg.Parameterization != nil && pkg.Parameterization.Kind == schema.ParameterizationExtension
+	isExtension := pkg.ExtensionParameterization != nil
 	if !isExtension && pkg.Provider != nil {
 		scanResource(pkg.Provider)
 	}
@@ -3502,7 +3515,7 @@ func setPythonRequires(schema *PyprojectSchema, pkg *schema.Package) {
 // setDependencies mutates the pyproject schema adding the dependencies to the
 // list in lexical order.
 func setDependencies(schema *PyprojectSchema, pkg *schema.Package, dependencies map[string]string) error {
-	deps, err := calculateDeps(pkg.Parameterization != nil, dependencies)
+	deps, err := calculateDeps(pkg.Parameterization != nil || pkg.ExtensionParameterization != nil, dependencies)
 	if err != nil {
 		return err
 	}

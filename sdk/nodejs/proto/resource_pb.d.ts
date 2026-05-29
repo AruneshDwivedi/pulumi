@@ -1322,6 +1322,11 @@ export class RegisterPackageRequest extends jspb.Message {
     getParameterization(): Parameterization | undefined;
     setParameterization(value?: Parameterization): RegisterPackageRequest;
 
+    hasExtension$(): boolean;
+    clearExtension$(): void;
+    getExtension$(): Parameterization | undefined;
+    setExtension$(value?: Parameterization): RegisterPackageRequest;
+
     serializeBinary(): Uint8Array;
     toObject(includeInstance?: boolean): RegisterPackageRequest.AsObject;
     static toObject(includeInstance: boolean, msg: RegisterPackageRequest): RegisterPackageRequest.AsObject;
@@ -1340,6 +1345,7 @@ export namespace RegisterPackageRequest {
 
         checksumsMap: Array<[string, Uint8Array | string]>,
         parameterization?: Parameterization.AsObject,
+        extension?: Parameterization.AsObject,
     }
 }
 
@@ -1372,8 +1378,6 @@ export class Parameterization extends jspb.Message {
     getValue_asU8(): Uint8Array;
     getValue_asB64(): string;
     setValue(value: Uint8Array | string): Parameterization;
-    getKind(): string;
-    setKind(value: string): Parameterization;
 
     serializeBinary(): Uint8Array;
     toObject(includeInstance?: boolean): Parameterization.AsObject;
@@ -1390,7 +1394,6 @@ export namespace Parameterization {
         name: string,
         version: string,
         value: Uint8Array | string,
-        kind: string,
     }
 }
 

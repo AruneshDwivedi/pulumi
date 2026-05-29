@@ -684,14 +684,15 @@ func installPlugin(
 	return nil
 }
 
-// replacementParamName returns the name of a parameterization that defines a
-// distinct plugin source, or "" for none. An extension returns "": it extends
-// its base plugin in place rather than forming a separate source.
-func replacementParamName(p *workspace.Parameterization) string {
-	if p == nil || p.Kind == workspace.ParameterizationExtension {
+// replacementParamName returns the name of a replacement parameterization on a
+// descriptor, or "" for none. Extensions share the base plugin binary at
+// runtime, so they don't contribute a distinct plugin source here even though
+// their generated SDKs are separately publishable.
+func replacementParamName(pd workspace.PackageDescriptor) string {
+	if pd.Parameterization == nil {
 		return ""
 	}
-	return p.Name
+	return pd.Parameterization.Name
 }
 
 // samePluginSource reports whether two descriptors resolve to the same plugin:
@@ -699,8 +700,7 @@ func replacementParamName(p *workspace.Parameterization) string {
 // parameterized as "scaleway" and a native "scaleway" provider are different
 // sources; an extension and its plain base are the same source.
 func samePluginSource(a, b workspace.PackageDescriptor) bool {
-	return a.Name == b.Name &&
-		replacementParamName(a.Parameterization) == replacementParamName(b.Parameterization)
+	return a.Name == b.Name && replacementParamName(a) == replacementParamName(b)
 }
 
 // describePluginSource returns a human-readable description of a plugin that
@@ -716,6 +716,10 @@ func describePluginSource(p workspace.PackageDescriptor) string {
 	if p.Parameterization != nil {
 		return fmt.Sprintf("plugin %q%s parameterized as %q v%s",
 			p.Name, pluginVer, p.Parameterization.Name, p.Parameterization.Version.String())
+	}
+	if p.ExtensionParameterization != nil {
+		return fmt.Sprintf("plugin %q%s extended by %q v%s",
+			p.Name, pluginVer, p.ExtensionParameterization.Name, p.ExtensionParameterization.Version.String())
 	}
 	return fmt.Sprintf("plugin %q%s", p.Name, pluginVer)
 }
@@ -797,6 +801,12 @@ func computeDefaultProviderPackages(
 			// Default providers are only relevant for resource plugins.
 			logging.V(preparePluginVerboseLog).Infof(
 				"computeDefaultProviderPlugins(): skipping %s, not a resource provider", p)
+			continue
+		}
+		if p.ExtensionParameterization != nil {
+			// Extensions route via RegisterPackage's extension ref map, not default-provider lookup.
+			logging.V(preparePluginVerboseLog).Infof(
+				"computeDefaultProviderPlugins(): skipping %s, extension package", p)
 			continue
 		}
 

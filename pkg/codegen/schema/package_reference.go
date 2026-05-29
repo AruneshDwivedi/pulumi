@@ -703,13 +703,20 @@ func (p *PartialPackage) Definition() (*Package, error) {
 	pkg.resourceTypeTable = p.types.resources
 	if p.spec.Parameterization != nil {
 		pkg.Parameterization = &Parameterization{
-			Name: p.spec.Parameterization.Name,
 			BaseProvider: BaseProvider{
 				Name:    p.spec.Parameterization.BaseProvider.Name,
 				Version: semver.MustParse(p.spec.Parameterization.BaseProvider.Version),
 			},
 			Parameter: p.spec.Parameterization.Parameter,
-			Kind:      p.spec.Parameterization.Kind,
+		}
+	}
+	if p.spec.ExtensionParameterization != nil {
+		pkg.ExtensionParameterization = &Parameterization{
+			BaseProvider: BaseProvider{
+				Name:    p.spec.ExtensionParameterization.BaseProvider.Name,
+				Version: semver.MustParse(p.spec.ExtensionParameterization.BaseProvider.Version),
+			},
+			Parameter: p.spec.ExtensionParameterization.Parameter,
 		}
 	}
 	if err := pkg.ImportLanguages(p.languages); err != nil {

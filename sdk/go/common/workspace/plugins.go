@@ -967,9 +967,17 @@ type PackageDescriptor struct {
 	// A specification for the plugin that provides the package.
 	PluginDescriptor
 
-	// An optional parameterization to apply to the providing plugin to produce
-	// the package.
+	// An optional replacement parameterization to apply to the providing plugin to
+	// produce the package. A replacement parameterization supplants the base plugin's
+	// identity, producing a distinct package backed by that plugin.
 	Parameterization *Parameterization
+
+	// An optional extension parameterization to apply to the providing plugin to
+	// produce the package. An extension parameterization extends the base plugin
+	// in place, adding resources alongside its own; the package shares the base
+	// provider rather than forming a separate one. Parameterization and
+	// ExtensionParameterization are mutually exclusive.
+	ExtensionParameterization *Parameterization
 }
 
 // A resolved plugin with parameterization arguments.
@@ -990,10 +998,22 @@ func NewPackageDescriptor(spec PluginDescriptor, parameterization *Parameterizat
 	}
 }
 
+// NewExtensionPackageDescriptor builds a PackageDescriptor for a package whose
+// parameterization extends the providing plugin in place rather than replacing it.
+func NewExtensionPackageDescriptor(spec PluginDescriptor, extension *Parameterization) PackageDescriptor {
+	return PackageDescriptor{
+		PluginDescriptor:          spec,
+		ExtensionParameterization: extension,
+	}
+}
+
 // PackageName returns the name of the package.
 func (pd PackageDescriptor) PackageName() string {
 	if pd.Parameterization != nil {
 		return pd.Parameterization.Name
+	}
+	if pd.ExtensionParameterization != nil {
+		return pd.ExtensionParameterization.Name
 	}
 	return pd.Name
 }
@@ -1002,6 +1022,9 @@ func (pd PackageDescriptor) PackageName() string {
 func (pd PackageDescriptor) PackageVersion() *semver.Version {
 	if pd.Parameterization != nil {
 		return &pd.Parameterization.Version
+	}
+	if pd.ExtensionParameterization != nil {
+		return &pd.ExtensionParameterization.Version
 	}
 	return pd.Version
 }
@@ -1012,6 +1035,9 @@ func (pd PackageDescriptor) String() string {
 	if pd.Parameterization != nil {
 		name = pd.Parameterization.Name
 		version = &pd.Parameterization.Version
+	} else if pd.ExtensionParameterization != nil {
+		name = pd.ExtensionParameterization.Name
+		version = &pd.ExtensionParameterization.Version
 	}
 
 	var v string
@@ -1054,32 +1080,11 @@ func SortPackageDescriptors(x PackageDescriptor, y PackageDescriptor) int {
 	}
 }
 
-// ParameterizationKind distinguishes a replacement parameterization, where the
-// parameterized package supplants the base plugin as a distinct package, from an
-// extension parameterization, where the package extends the base plugin in place.
-type ParameterizationKind string
-
-const (
-	// ParameterizationReplacement is the zero value: the parameterized package
-	// replaces the base plugin as a distinct package.
-	ParameterizationReplacement ParameterizationKind = ""
-	// ParameterizationExtension marks a parameterization that extends its base
-	// plugin rather than replacing it; an extension shares the base plugin's
-	// source and is not a separate provider.
-	ParameterizationExtension ParameterizationKind = "extension"
-)
-
-// Valid reports whether k is a recognized parameterization kind.
-func (k ParameterizationKind) Valid() bool {
-	switch k {
-	case ParameterizationReplacement, ParameterizationExtension:
-		return true
-	default:
-		return false
-	}
-}
-
 // A Parameterization may be applied to a supporting plugin to yield a package.
+//
+// The PackageDescriptor field that holds a *Parameterization (either
+// Parameterization or ExtensionParameterization) determines whether the
+// parameterization replaces the base plugin or extends it in place.
 type Parameterization struct {
 	// The name of the package that will be produced by the parameterization.
 	Name string
@@ -1088,8 +1093,6 @@ type Parameterization struct {
 	// A plugin-dependent bytestring representing the value of the parameter to be
 	// passed to the plugin.
 	Value []byte
-	// Kind distinguishes a replacement parameterization from an extension.
-	Kind ParameterizationKind
 }
 
 // PluginSpec is a resolved plugin, ready for download.

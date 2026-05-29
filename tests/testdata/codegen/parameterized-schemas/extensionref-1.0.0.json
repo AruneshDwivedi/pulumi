@@ -11,9 +11,8 @@
       "type": "object"
     }
   },
-  "parameterization": {
+  "extensionParameterization": {
     "baseProvider": { "name": "test-base", "version": "1.0.0" },
-    "parameter": "dGVzdA==",
-    "kind": "extension"
+    "parameter": "dGVzdA=="
   }
 }

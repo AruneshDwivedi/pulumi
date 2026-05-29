@@ -811,14 +811,15 @@ export function registerPackage(args: RegisterPackageArgs): Promise<string> {
     params.setName(args.packageName);
     params.setVersion(args.packageVersion);
     params.setValue(Uint8Array.from(atob(args.base64Parameter), (c) => c.charCodeAt(0)));
-    if (args.extension) {
-        params.setKind("extension");
-    }
     const req = new resproto.RegisterPackageRequest();
     req.setName(args.baseProviderName);
     req.setVersion(args.baseProviderVersion);
     req.setDownloadUrl(args.baseProviderDownloadUrl);
-    req.setParameterization(params);
+    if (args.extension) {
+        req.setExtension$(params);
+    } else {
+        req.setParameterization(params);
+    }
 
     const mon = getMonitor();
     if (mon === undefined) {

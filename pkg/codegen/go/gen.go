@@ -2373,7 +2373,7 @@ func (pkg *pkgContext) genResource(
 	assignment := ":="
 	packageRef := ""
 	packageArg := ""
-	if def.Parameterization != nil {
+	if def.Parameterization != nil || def.ExtensionParameterization != nil {
 		assignment = "="
 		packageRef = "Package"
 		packageArg = "ref, "
@@ -2414,7 +2414,7 @@ func (pkg *pkgContext) genResource(
 		assignment := ":="
 		packageRef := ""
 		packageArg := ""
-		if def.Parameterization != nil {
+		if def.Parameterization != nil || def.ExtensionParameterization != nil {
 			assignment = "="
 			packageRef = "Package"
 			packageArg = "ref, "
@@ -2585,7 +2585,7 @@ func (pkg *pkgContext) genResource(
 		}
 		packageRef := ""
 		packageArg := ""
-		if def.Parameterization != nil {
+		if def.Parameterization != nil || def.ExtensionParameterization != nil {
 			packageRef = "Package"
 			packageArg = ", ref"
 			callOutput := outputsType
@@ -2962,7 +2962,7 @@ func (pkg *pkgContext) genFunction(w io.Writer, f *schema.Function, useGenericTy
 		assignment := ":="
 		packageRef := ""
 		packageArg := ""
-		if def.Parameterization != nil {
+		if def.Parameterization != nil || def.ExtensionParameterization != nil {
 			assignment = "="
 			packageRef = "Package"
 			packageArg = "ref, "
@@ -3229,7 +3229,7 @@ func (pkg *pkgContext) genFunctionOutputVersion(w io.Writer, f *schema.Function,
 		fmt.Fprintf(w, "			args := v.(%sArgs)\n", originalName)
 		fmt.Fprintf(w, "			options := pulumi.InvokeOutputOptions{InvokeOptions: %s.PkgInvokeDefaultOpts(opts)}\n", pkg.internalModuleName)
 
-		if def.Parameterization != nil {
+		if def.Parameterization != nil || def.ExtensionParameterization != nil {
 			err = pkg.GenPkgGetPackageRefCall(w, resultTypeName+"{}")
 			if err != nil {
 				return err
@@ -3262,7 +3262,7 @@ func (pkg *pkgContext) genFunctionOutputVersion(w io.Writer, f *schema.Function,
 		fmt.Fprintf(w, "	return pulumi.ToOutput(0).ApplyT(func(int) (%s, error) {\n", resultTypeName)
 		fmt.Fprintf(w, "		options := pulumi.InvokeOutputOptions{InvokeOptions: %s.PkgInvokeDefaultOpts(opts)}\n", pkg.internalModuleName)
 
-		if def.Parameterization != nil {
+		if def.Parameterization != nil || def.ExtensionParameterization != nil {
 			err = pkg.GenPkgGetPackageRefCall(w, resultTypeName+"{}")
 			if err != nil {
 				return err
@@ -3874,12 +3874,6 @@ func (pkg *pkgContext) getTypeImports(t schema.Type, recurse bool, importsAndAli
 	}
 }
 
-// extensionModulePath is the local Go module path for an extension SDK, named
-// for the extension rather than the base provider it extends.
-func extensionModulePath(pkg *schema.Package) string {
-	return pkg.Parameterization.Name
-}
-
 // ExtractModulePath creates a go module path for a given package.
 func ExtractModulePath(extPkg schema.PackageReference) string {
 	contract.Assertf(extPkg != nil, "ExtractModulePath(nil) is not allowed")
@@ -4232,13 +4226,6 @@ func (pkg *pkgContext) genResourceModule(w io.Writer) error {
 func generatePackageContextMap(tool string, pkg schema.PackageReference, goInfo GoPackageInfo, externalPkgs *Cache) (map[string]*pkgContext, error) {
 	packages := map[string]*pkgContext{}
 
-	// An extension SDK is generated into the consuming project, so it uses a
-	// local module path rather than the base provider's.
-	if def, err := pkg.Definition(); err == nil && def.Parameterization != nil &&
-		def.Parameterization.Kind == schema.ParameterizationExtension {
-		goInfo.ImportBasePath = extensionModulePath(def) + "/" + goPackage(def.Name)
-	}
-
 	// Share the cache
 	if externalPkgs == nil {
 		externalPkgs = globalCache
@@ -4528,7 +4515,7 @@ func generatePackageContextMap(tool string, pkg schema.PackageReference, goInfo 
 
 	// Extension-parameterized packages don't get their own Provider class — they
 	// reuse the base provider their extension was applied to.
-	isExtension := def.Parameterization != nil && def.Parameterization.Kind == schema.ParameterizationExtension
+	isExtension := def.ExtensionParameterization != nil
 	if !isExtension && def.Provider != nil {
 		scanResource(def.Provider)
 	}
@@ -4852,12 +4839,22 @@ func GeneratePackage(tool string,
 
 	// For both replacement and extension parameterization the plugin name/version
 	// in pulumi-plugin.json is from the base provider, not the top-level package.
+	// The PulumiParameterizationJSON serialization keeps a "kind" discriminator so
+	// downstream readers can recover which flavor was generated.
 	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
 			Name:    pulumiPlugin.Name,
 			Version: pulumiPlugin.Version,
 			Value:   param.Parameter,
-			Kind:    string(param.Kind),
+		}
+		pulumiPlugin.Name = param.BaseProvider.Name
+		pulumiPlugin.Version = param.BaseProvider.Version.String()
+	} else if param := pkg.ExtensionParameterization; param != nil {
+		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
+			Name:    pulumiPlugin.Name,
+			Version: pulumiPlugin.Version,
+			Value:   param.Parameter,
+			Kind:    "extension",
 		}
 		pulumiPlugin.Name = param.BaseProvider.Name
 		pulumiPlugin.Version = param.BaseProvider.Version.String()
@@ -5165,7 +5162,7 @@ func GeneratePackage(tool string,
 			if err != nil {
 				return nil, err
 			}
-			if def.Parameterization != nil {
+			if def.Parameterization != nil || def.ExtensionParameterization != nil {
 				imports = append(imports, "encoding/base64")
 				importsAndAliases["github.com/pulumi/pulumi/sdk/v3/proto/go"] = "pulumirpc"
 			}
@@ -5221,10 +5218,6 @@ func GeneratePackage(tool string,
 			}
 		}
 
-		if pkg.Parameterization != nil && pkg.Parameterization.Kind == schema.ParameterizationExtension {
-			modulePath = extensionModulePath(pkg)
-		}
-
 		var gomod modfile.File
 		err = gomod.AddModuleStmt(modulePath)
 		contract.AssertNoErrorf(err, "could not add module statement to go.mod")
@@ -5232,7 +5225,7 @@ func GeneratePackage(tool string,
 		contract.AssertNoErrorf(err, "could not add Go statement to go.mod")
 		pulumiPackagePath := "github.com/pulumi/pulumi/sdk/v3"
 		pulumiVersion := "v3.30.0"
-		if pkg.Parameterization != nil {
+		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
 			pulumiVersion = "v3.228.0"
 		}
 		err = gomod.AddRequire(pulumiPackagePath, pulumiVersion)
@@ -5385,16 +5378,17 @@ func Pkg%[1]sDefaultOpts(opts []pulumi.%[1]sOption) []pulumi.%[1]sOption {
 		versionPackageRef = fmt.Sprintf("semver.MustParse(%q)", p.Version.String())
 	}
 	// Parameterized schemas _always_ respect schema version.
-	if p.Parameterization != nil {
+	if p.Parameterization != nil || p.ExtensionParameterization != nil {
 		if p.Version == nil {
 			return errors.New("package version is required")
 		}
 		versionPackageRef = fmt.Sprintf("semver.MustParse(%q)", p.Version.String())
 
 		// The template emits a PkgGetPackageRef function that, on first call per
-		// pulumi.Context, registers the package and caches the returned ref. The
-		// only difference between replacement and extension parameterization is
-		// the Kind carried on the Parameterization proto message.
+		// pulumi.Context, registers the package and caches the returned ref. A
+		// replacement schema fills the request's Parameterization field; an
+		// extension fills the Extension field instead — the proto's structure
+		// carries the meaning rather than a discriminator.
 		const packageRefTemplate string = `
 // PkgGetPackageRef returns the package reference for the current package.
 // The reference is cached per pulumi.Context so that concurrent inline
@@ -5410,29 +5404,32 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 			Name: %q,
 			Version: %q,
 			DownloadUrl: %q,
-			Parameterization: &pulumirpc.Parameterization{
+			%s: &pulumirpc.Parameterization{
 				Name: %q,
 				Version: %q,
-				Value: parameter,%s
+				Value: parameter,
 			},
 		}, nil
 	})
 }
 `
 
-		param := p.Parameterization
+		var param *schema.Parameterization
+		fieldName := "Parameterization"
+		if p.ExtensionParameterization != nil {
+			param = p.ExtensionParameterization
+			fieldName = "Extension"
+		} else {
+			param = p.Parameterization
+		}
 		value := base64.StdEncoding.EncodeToString(param.Parameter)
 		key := fmt.Sprintf("%s:%s", p.Name, p.Version.String())
-		kindLine := ""
-		if param.Kind != "" {
-			kindLine = fmt.Sprintf("\n\t\t\t\tKind: %q,", string(param.Kind))
-		}
 		_, err = fmt.Fprintf(w, packageRefTemplate,
 			key,
 			value,
 			param.BaseProvider.Name, param.BaseProvider.Version.String(), p.PluginDownloadURL,
+			fieldName,
 			p.Name, p.Version.String(),
-			kindLine,
 		)
 		if err != nil {
 			return err

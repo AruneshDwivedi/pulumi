@@ -865,15 +865,16 @@ func (rm *ResourceMonitor) RegisterPackage(pkg, version, downloadURL string, che
 
 // RegisterExtensionPackage registers a package with an extension parameterization
 // (as opposed to a replacement parameterization). The returned ref is a content
-// hash of the extension blob, stable across runs.
+// hash of the extension blob, stable across runs. The extension proto travels
+// in RegisterPackageRequest.Extension, not Parameterization — the proto's
+// structure carries the meaning rather than a discriminator field.
 func (rm *ResourceMonitor) RegisterExtensionPackage(pkg, version string,
 	extension *pulumirpc.Parameterization,
 ) (string, error) {
-	extension.Kind = "extension"
 	resp, err := rm.resmon.RegisterPackage(context.Background(), &pulumirpc.RegisterPackageRequest{
-		Name:             pkg,
-		Version:          version,
-		Parameterization: extension,
+		Name:      pkg,
+		Version:   version,
+		Extension: extension,
 	})
 	if err != nil {
 		return "", err

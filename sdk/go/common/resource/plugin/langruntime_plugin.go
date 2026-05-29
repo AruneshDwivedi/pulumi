@@ -272,6 +272,7 @@ func (h *langhost) GetRequiredPackages(
 			return nil, nil, fmt.Errorf("unrecognized plugin kind: %s", info.Kind)
 		}
 		var parameterization *workspace.Parameterization
+		var extensionParameterization *workspace.Parameterization
 		if info.Parameterization != nil {
 			sv, err := semver.ParseTolerant(info.Parameterization.Version)
 			if err != nil {
@@ -280,18 +281,24 @@ func (h *langhost) GetRequiredPackages(
 					info.GetName(), info.Parameterization.Version, err)
 			}
 
-			kind := workspace.ParameterizationKind(info.Parameterization.Kind)
-			if !kind.Valid() {
-				return nil, fmt.Errorf(
-					"unknown parameterization kind %q returned by language host for %s",
-					info.Parameterization.Kind, info.GetName())
-			}
-
-			parameterization = &workspace.Parameterization{
+			p := &workspace.Parameterization{
 				Name:    info.Parameterization.Name,
 				Version: sv,
 				Value:   info.Parameterization.Value,
-				Kind:    kind,
+			}
+
+			// The PackageParameterization proto still carries a "kind" discriminator
+			// to identify the extension flavor over the language-host RPC boundary.
+			// Translate it into one of the two PackageDescriptor fields here.
+			switch info.Parameterization.Kind {
+			case "":
+				parameterization = p
+			case "extension":
+				extensionParameterization = p
+			default:
+				return nil, fmt.Errorf(
+					"unknown parameterization kind %q returned by language host for %s",
+					info.Parameterization.Kind, info.GetName())
 			}
 		}
 
@@ -303,7 +310,8 @@ func (h *langhost) GetRequiredPackages(
 				PluginDownloadURL: info.Server,
 				Checksums:         info.Checksums,
 			},
-			Parameterization: parameterization,
+			Parameterization:          parameterization,
+			ExtensionParameterization: extensionParameterization,
 		})
 	}
 
@@ -937,6 +945,13 @@ func (h *langhost) Link(
 				Name:    dep.Descriptor.Parameterization.Name,
 				Version: dep.Descriptor.Parameterization.Version.String(),
 				Value:   dep.Descriptor.Parameterization.Value,
+			}
+		} else if dep.Descriptor.ExtensionParameterization != nil {
+			parameterization = &pulumirpc.PackageParameterization{
+				Name:    dep.Descriptor.ExtensionParameterization.Name,
+				Version: dep.Descriptor.ExtensionParameterization.Version.String(),
+				Value:   dep.Descriptor.ExtensionParameterization.Value,
+				Kind:    "extension",
 			}
 		}
 

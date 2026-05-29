@@ -710,9 +710,11 @@ func (rm *resmon) RegisterPackage(ctx context.Context,
 		}
 		version = &v
 	}
-	// Parse the parameterization
+	// Parse the parameterization. A request either carries a replacement
+	// Parameterization or an Extension parameterization, never both — the proto
+	// keeps them in separate fields so the structure carries the meaning.
 	var parameterization *workspace.Parameterization
-	if req.Parameterization != nil && req.Parameterization.Kind != string(workspace.ParameterizationExtension) {
+	if req.Parameterization != nil {
 		parameterizationVersion, err := semver.Parse(req.Parameterization.Version)
 		if err != nil {
 			return nil, fmt.Errorf("parse parameter version %s: %w", req.Parameterization.Version, err)
@@ -738,11 +740,11 @@ func (rm *resmon) RegisterPackage(ctx context.Context,
 	// Extension calls dedup by content hash: identical (base, extension) pairs always
 	// produce the same ref, and pairs differing only in the extension produce different
 	// refs. Replacement / plain calls dedup by ProviderRequest as before.
-	if req.Parameterization != nil && req.Parameterization.Kind == string(workspace.ParameterizationExtension) {
+	if req.Extension != nil {
 		extension := apitype.Extension{
-			Name:    req.Parameterization.Name,
-			Version: req.Parameterization.Version,
-			Value:   req.Parameterization.Value,
+			Name:    req.Extension.Name,
+			Version: req.Extension.Version,
+			Value:   req.Extension.Value,
 		}
 		ref := hashExtension(extension)
 

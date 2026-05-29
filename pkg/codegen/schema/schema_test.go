@@ -2898,8 +2898,8 @@ func TestBindExtensionParameterized(t *testing.T) {
 		AllowDanglingReferences: true,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, pkg.Parameterization)
-	require.Equal(t, ParameterizationExtension, pkg.Parameterization.Kind)
+	require.NotNil(t, pkg.ExtensionParameterization)
+	require.Nil(t, pkg.Parameterization)
 	assert.Empty(t, diags)
 	newSpec, err := pkg.MarshalSpec()
 	require.NoError(t, err)
@@ -2910,8 +2910,8 @@ func TestBindExtensionParameterized(t *testing.T) {
 		AllowDanglingReferences: true,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, pkg2.Parameterization)
-	require.Equal(t, ParameterizationExtension, pkg2.Parameterization.Kind)
+	require.NotNil(t, pkg2.ExtensionParameterization)
+	require.Nil(t, pkg2.Parameterization)
 	assert.Empty(t, diags)
 }
 
