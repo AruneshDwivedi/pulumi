@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,20 @@ from the parameters, as in:
 
 			pluginSource := args[0]
 			parameters := &plugin.ParameterizeArgs{Args: args[1:]}
+
+			// For Pulumi-Cloud-hosted Terraform modules, inject TF_TOKEN_<host>
+			// so the embedded `tofu init` authenticates against the customer's
+			// Pulumi cloud (app.pulumi.com or self-hosted) without a separate
+			// `terraform login` step. The injection only fires when the
+			// address host matches the currently configured Pulumi cloud URL.
+			if pluginSource == "terraform-module" && len(parameters.Args) > 0 {
+				if envKey, token, ok := tfTokenForPulumiCloudAddress(parameters.Args[0]); ok {
+					if os.Getenv(envKey) == "" {
+						_ = os.Setenv(envKey, token)
+						defer func() { _ = os.Unsetenv(envKey) }()
+					}
+				}
+			}
 
 			pkg, packageSpec, diags, err := packages.InstallPackage(
 				cmd.OutOrStdout(),
@@ -301,4 +316,49 @@ func loadEnclosingTarget(ctx context.Context, wd string) (addTarget, error) {
 		panic(fmt.Sprintf("workspace.LoadBaseProjectFrom promises that it will return "+
 			"either *workspace.Project or *workspace.PluginProject, found %T", baseProject))
 	}
+}
+
+// tfTokenForPulumiCloudAddress checks whether the given pulumi-terraform-module
+// address points at the customer's currently configured Pulumi cloud URL. If it
+// does, it returns the corresponding TF_TOKEN_<host> environment variable name
+// and the access token to set, so `tofu init` (running inside the embedded
+// pulumi-terraform-module provider) can authenticate without a separate
+// `terraform login` step. Self-hosted installations work the same way: the
+// host is derived from the configured cloud URL, not hardcoded to
+// app.pulumi.com.
+//
+// Token resolution prefers PULUMI_ACCESS_TOKEN over the stored credentials,
+// matching the rest of the CLI's auth path.
+func tfTokenForPulumiCloudAddress(address string) (envKey, token string, ok bool) {
+	host, _, found := strings.Cut(address, "/")
+	if !found || host == "" {
+		return "", "", false
+	}
+	creds, err := workspace.GetStoredCredentials()
+	if err != nil || creds.Current == "" {
+		return "", "", false
+	}
+	parsed, err := url.Parse(creds.Current)
+	if err != nil || parsed.Host != host {
+		return "", "", false
+	}
+	if envToken := os.Getenv("PULUMI_ACCESS_TOKEN"); envToken != "" {
+		token = envToken
+	} else {
+		token = creds.AccessTokens[creds.Current]
+	}
+	if token == "" {
+		return "", "", false
+	}
+	return "TF_TOKEN_" + tfTokenHostKey(host), token, true
+}
+
+// tfTokenHostKey encodes a hostname per HashiCorp's TF_TOKEN_<host> env-var
+// convention: dots are replaced with underscores; dashes with double
+// underscores. See:
+// https://developer.hashicorp.com/terraform/cli/config/config-file#environment-variable-credentials
+func tfTokenHostKey(host string) string {
+	host = strings.ReplaceAll(host, "-", "__")
+	host = strings.ReplaceAll(host, ".", "_")
+	return host
 }

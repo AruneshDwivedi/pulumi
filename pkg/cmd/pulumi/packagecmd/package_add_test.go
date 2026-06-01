@@ -311,3 +311,24 @@ func TestPrintRegistryDocsHint(t *testing.T) {
 		})
 	}
 }
+
+func TestTFTokenHostKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"app.pulumi.com", "app_pulumi_com"},
+		{"pulumi.example.com", "pulumi_example_com"},
+		{"pulumi-internal.example.com", "pulumi__internal_example_com"},
+		{"my-host.my-domain.com", "my__host_my__domain_com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tfTokenHostKey(tt.host))
+		})
+	}
+}
