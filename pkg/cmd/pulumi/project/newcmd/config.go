@@ -16,6 +16,7 @@ package newcmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -52,6 +53,7 @@ func HandleConfig(
 	path bool,
 	opts display.Options,
 	configFile string,
+	allowRemoteConfigWrite bool,
 ) error {
 	// Get the existing config. stackConfig will be nil if there wasn't a previous deployment.
 	latest, err := backend.GetLatestConfiguration(ctx, s)
@@ -73,7 +75,11 @@ func HandleConfig(
 	// If the stack already existed and had previous config, those values will be used as the defaults.
 	var c config.Map
 	if isPreconfiguredEmptyStack(templateNameOrURL, template.Config, stackConfig, snap) {
-		c = stackConfig
+		// A remote stack's config already lives in the linked ESC environment; re-saving the recorded
+		// secure values (ciphertext here) would corrupt them, so adopt stackConfig only for local stacks.
+		if !cmdConfig.ConfigStoreIsRemote(s, configFile) {
+			c = stackConfig
+		}
 		// TODO[pulumi/pulumi#1894] consider warning if templateNameOrURL is different from
 		// the stack's `pulumi:template` config value.
 	} else {
@@ -105,7 +111,7 @@ func HandleConfig(
 
 	// Save the config.
 	if len(c) > 0 {
-		if err = SaveConfig(ctx, sink, ws, s, c, configFile); err != nil {
+		if err = SaveConfig(ctx, sink, ws, s, c, configFile, allowRemoteConfigWrite); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 
@@ -213,23 +219,31 @@ func promptForConfig(
 	}
 	sort.Sort(keys)
 
-	// We need to load the stack config here for the secret manager
-	ps, err := cmdStack.LoadProjectStack(ctx, sink, project, stack, configFile)
-	if err != nil {
-		return nil, fmt.Errorf("loading stack config: %w", err)
-	}
-
-	sm, state, err := ssml.GetSecretsManager(ctx, stack, ps)
-	if err != nil {
-		return nil, err
-	}
-	if state != cmdStack.SecretsManagerUnchanged {
-		if err = cmdStack.SaveProjectStack(ctx, stack, ps, configFile); err != nil {
-			return nil, fmt.Errorf("saving stack config: %w", err)
+	// Remote-config stacks encrypt secrets server-side, so we hand the editor plaintext secure
+	// values (wrapped as fn::secret on save) rather than encrypting locally, and skip the local
+	// secrets manager.
+	remote := cmdConfig.ConfigStoreIsRemote(stack, configFile)
+	encrypter := config.NopEncrypter
+	decrypter := config.NopDecrypter
+	if !remote {
+		// We need to load the stack config here for the secret manager
+		ps, err := cmdStack.LoadProjectStack(ctx, sink, project, stack, configFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading stack config: %w", err)
 		}
+
+		sm, state, err := ssml.GetSecretsManager(ctx, stack, ps)
+		if err != nil {
+			return nil, err
+		}
+		if state != cmdStack.SecretsManagerUnchanged {
+			if err = cmdStack.SaveProjectStack(ctx, stack, ps, configFile); err != nil {
+				return nil, fmt.Errorf("saving stack config: %w", err)
+			}
+		}
+		encrypter = sm.Encrypter()
+		decrypter = sm.Decrypter()
 	}
-	encrypter := sm.Encrypter()
-	decrypter := sm.Decrypter()
 
 	c := make(config.Map)
 
@@ -242,10 +256,11 @@ func promptForConfig(
 
 		templateConfigValue := parsedTemplateConfig[k]
 
-		// Prepare a default value.
+		// Prepare a default value. For a remote stack the only default is the template's: we never
+		// seed from stackConfig (the last deployment's config, possibly stale ciphertext).
 		var defaultValue string
 		var secret bool
-		if stackConfig != nil {
+		if !remote && stackConfig != nil {
 			// Use the stack's existing value as the default.
 			if val, ok := stackConfig[k]; ok {
 				// It's OK to pass a nil or non-nil crypter for non-secret values.
@@ -332,10 +347,23 @@ func ParseConfig(configArray []string, path bool) (config.Map, error) {
 	return configMap, nil
 }
 
-// SaveConfig saves the config for the stack.
+// SaveConfig saves the config for the stack. allowRemoteConfigWrite must be true to persist config to
+// a remote-config stack's shared ESC environment; callers that pass false are rejected and pointed at
+// `pulumi config set`, so a read-only command like preview can't mutate shared config.
 func SaveConfig(
-	ctx context.Context, sink diag.Sink, ws pkgWorkspace.Context, stack backend.Stack, c config.Map, configFile string,
+	ctx context.Context, sink diag.Sink, ws pkgWorkspace.Context, stack backend.Stack, c config.Map,
+	configFile string, allowRemoteConfigWrite bool,
 ) error {
+	if cmdConfig.ConfigStoreIsRemote(stack, configFile) {
+		if !allowRemoteConfigWrite {
+			return errors.New("setting configuration with --config is not supported for remote-config " +
+				"stacks; use `pulumi config set`")
+		}
+		// Write to the linked ESC environment via the editor rather than SaveProjectStack, which routes
+		// to the link-only SaveRemoteConfig and rejects config.
+		return cmdConfig.SaveRemoteConfigValues(ctx, stack, c)
+	}
+
 	project, _, err := ws.ReadProject()
 	if err != nil {
 		return err

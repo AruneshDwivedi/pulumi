@@ -93,6 +93,7 @@ type newArgs struct {
 	templateMode          bool
 	runtimeOptions        []string
 	remoteStackConfig     bool
+	remoteConfig          bool
 	stdout                io.Writer
 	stderr                io.Writer
 }
@@ -101,6 +102,8 @@ func runNew(ctx context.Context, args newArgs) error {
 	if !args.interactive && !args.yes {
 		return backenderr.ErrNonInteractiveRequiresYes
 	}
+
+	useRemoteConfig := args.remoteStackConfig || args.remoteConfig
 
 	// Default to discarding output when callers (e.g. tests) don't provide writers.
 	if args.stdout == nil {
@@ -391,7 +394,7 @@ func runNew(ctx context.Context, args newArgs) error {
 	if !args.generateOnly && s == nil {
 		if s, err = PromptAndCreateStack(ctx, cmdutil.Diag(), ws, b, args.prompt,
 			args.stack, root, true /*setCurrent*/, args.yes, opts, args.secretsProvider,
-			args.remoteStackConfig, ""); err != nil {
+			useRemoteConfig, ""); err != nil {
 			return err
 		}
 		// The backend will print "Created stack '<stack>'" on success.
@@ -468,6 +471,7 @@ func runNew(ctx context.Context, args newArgs) error {
 			args.configPath,
 			opts,
 			"",
+			true, // pulumi new may write creation-time config to a remote-config stack
 		)
 		if err != nil {
 			return err
@@ -701,6 +705,14 @@ func NewNewCmd() *cobra.Command {
 		"Store stack configuration remotely",
 	)
 	_ = cmd.PersistentFlags().MarkHidden("remote-stack-config")
+
+	// --remote-config is the intended canonical name; --remote-stack-config is the deprecation
+	// candidate. The final naming is locked in Phase 2, so both stay hidden for now.
+	cmd.PersistentFlags().BoolVar(
+		&args.remoteConfig, "remote-config", false,
+		"Store stack configuration remotely",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("remote-config")
 
 	return cmd
 }
