@@ -203,9 +203,7 @@ func (sm *SnapshotManager) doExtendParameterize(step deploy.Step) (engine.Snapsh
 	return &noopSnapshotMutation{}, nil
 }
 
-// noopSnapshotMutation reports no resource-state change. ExtensionParameterizeStep uses it because
-// its work (calling Parameterize on a plugin) is a side effect on the plugin process, not
-// a mutation of any resource in the snapshot.
+// noopSnapshotMutation reports no resource-state change.
 type noopSnapshotMutation struct{}
 
 func (*noopSnapshotMutation) End(_ deploy.Step, _ bool) error { return nil }

@@ -2887,32 +2887,26 @@ func TestBindParameterizedExternals(t *testing.T) {
 	assert.Empty(t, diags)
 }
 
-// Test that we can bind a package with a top-level extension parameterization.
-func TestBindExtensionParameterized(t *testing.T) {
+func TestBindRejectsBothParameterizations(t *testing.T) {
 	t.Parallel()
 
-	testdataPath := filepath.Join("..", "testing", "test", "testdata", "parameterized-schemas")
-	loader := NewPluginLoader(utils.NewHost(testdataPath))
-	pkgSpec := readSchemaFile("parameterized-schemas/extensionref-1.0.0.json")
-	pkg, diags, err := BindSpec(pkgSpec, loader, ValidationOptions{
-		AllowDanglingReferences: true,
-	})
+	spec := PackageSpec{
+		Name:     "demo",
+		Version:  "1.0.0",
+		Provider: ResourceSpec{ObjectTypeSpec: ObjectTypeSpec{Type: "object"}},
+		Parameterization: &ParameterizationSpec{
+			BaseProvider: BaseProviderSpec{Name: "base", Version: "1.0.0"},
+			Parameter:    []byte("a"),
+		},
+		ExtensionParameterization: &ParameterizationSpec{
+			BaseProvider: BaseProviderSpec{Name: "base", Version: "1.0.0"},
+			Parameter:    []byte("b"),
+		},
+	}
+	_, diags, err := BindSpec(spec, nil, ValidationOptions{})
 	require.NoError(t, err)
-	require.NotNil(t, pkg.ExtensionParameterization)
-	require.Nil(t, pkg.Parameterization)
-	assert.Empty(t, diags)
-	newSpec, err := pkg.MarshalSpec()
-	require.NoError(t, err)
-	require.NotNil(t, newSpec)
-
-	// Try and bind again
-	pkg2, diags, err := BindSpec(*newSpec, loader, ValidationOptions{
-		AllowDanglingReferences: true,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, pkg2.ExtensionParameterization)
-	require.Nil(t, pkg2.Parameterization)
-	assert.Empty(t, diags)
+	require.True(t, diags.HasErrors(), "expected diagnostics; got: %v", diags)
+	require.Contains(t, diags.Error(), "extensionParameterization")
 }
 
 func TestTokenToModuleIndexPrefix(t *testing.T) {

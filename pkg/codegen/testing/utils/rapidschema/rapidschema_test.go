@@ -93,6 +93,8 @@ type shapes struct {
 	stateInputs      bool
 	complexEnum      bool
 	complexObject    bool
+	parameterization          bool
+	extensionParameterization bool
 }
 
 func (s *shapes) missing() []string {
@@ -120,6 +122,8 @@ func (s *shapes) missing() []string {
 		"stateInputs":         s.stateInputs,
 		"enumType":            s.complexEnum,
 		"objectType":          s.complexObject,
+		"parameterization":          s.parameterization,
+		"extensionParameterization": s.extensionParameterization,
 	}
 	var missing []string
 	for name, ok := range checks {
@@ -131,6 +135,12 @@ func (s *shapes) missing() []string {
 }
 
 func (s *shapes) observePackage(pkg *schema.Package) {
+	if pkg.Parameterization != nil {
+		s.parameterization = true
+	}
+	if pkg.ExtensionParameterization != nil {
+		s.extensionParameterization = true
+	}
 	for _, t := range pkg.Types {
 		switch t := t.(type) {
 		case *schema.ObjectType:

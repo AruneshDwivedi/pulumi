@@ -147,7 +147,7 @@ func drawPackageSpec(t *rapid.T) schema.PackageSpec {
 		resources[tok] = drawResourceSpec(t, ctx, tok)
 	}
 
-	return schema.PackageSpec{
+	spec := schema.PackageSpec{
 		Name:    name,
 		Version: Version().Draw(t, "version").String(),
 		// Provider is required by the binder; an empty object satisfies it
@@ -155,6 +155,30 @@ func drawPackageSpec(t *rapid.T) schema.PackageSpec {
 		Provider:  schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}},
 		Types:     ctx.typeDefs,
 		Resources: resources,
+	}
+
+	switch rapid.IntRange(0, 2).Draw(t, "parameterization") {
+	case 1:
+		p := drawParameterizationSpec(t, "parameterization")
+		spec.Parameterization = &p
+	case 2:
+		p := drawParameterizationSpec(t, "extensionParameterization")
+		spec.ExtensionParameterization = &p
+	}
+
+	return spec
+}
+
+// drawParameterizationSpec produces a fully-formed ParameterizationSpec.
+// BaseProvider.Name follows the package-name format; Version is a strict
+// semver via Version(); Parameter is arbitrary bytes (often empty).
+func drawParameterizationSpec(t *rapid.T, label string) schema.ParameterizationSpec {
+	return schema.ParameterizationSpec{
+		BaseProvider: schema.BaseProviderSpec{
+			Name:    drawPackageName(t, label+":baseProvider:name"),
+			Version: Version().Draw(t, label+":baseProvider:version").String(),
+		},
+		Parameter: rapid.SliceOfN(rapid.Byte(), 0, 32).Draw(t, label+":parameter"),
 	}
 }
 

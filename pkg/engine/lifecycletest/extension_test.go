@@ -41,10 +41,10 @@ import (
 //     plugin instance) — once per extension blob.
 //   - The resulting snapshot persists both extension blobs in snap.Extensions and
 //     records each resource's ExtensionRef.
-//   - A second Update against the same snapshot — without the program re-supplying
-//     the blobs — exercises load-time rehydration: the engine pulls blobs from
-//     state and replays Parameterize on the fresh plugin instance before any
-//     resource ops touch it.
+//   - A second Refresh against the same snapshot — without the program re-supplying
+//     the blobs — exercises state-only parameterization: the engine pulls blobs
+//     from state and calls Parameterize on the fresh plugin when each Refresh
+//     step needs the provider.
 func TestExtensionParameterizedProvider(t *testing.T) {
 	t.Parallel()
 
@@ -158,9 +158,10 @@ func TestExtensionParameterizedProvider(t *testing.T) {
 	assert.Equal(t, refA, resA.ExtensionRef)
 	assert.Equal(t, refB, resB.ExtensionRef)
 
-	// Run #2: rehydration test. Use a program that does NOT register the
-	// extensions (no live RegisterPackage); the engine must pull blobs from
-	// state and re-Parameterize the fresh plugin before any resource op.
+	// Run #2: state-only parameterization. Use a program that does NOT register
+	// the extensions (no live RegisterPackage); the engine must pull blobs from
+	// state and Parameterize the fresh plugin lazily when each Refresh step
+	// needs the provider.
 	paramLock.Lock()
 	paramCalls = nil
 	paramLock.Unlock()
@@ -177,11 +178,11 @@ func TestExtensionParameterizedProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, snap2)
 
-	// Rehydration must have replayed both blobs onto the fresh plugin.
+	// Lazy parameterization must have replayed both blobs onto the fresh plugin.
 	paramLock.Lock()
-	rehydrated := append([]paramCall(nil), paramCalls...)
+	replayed := append([]paramCall(nil), paramCalls...)
 	paramLock.Unlock()
-	require.Len(t, rehydrated, 2, "rehydration must replay both extensions on the fresh plugin")
-	gotNames := []string{rehydrated[0].name, rehydrated[1].name}
+	require.Len(t, replayed, 2, "lazy path must replay both extensions on the fresh plugin")
+	gotNames := []string{replayed[0].name, replayed[1].name}
 	assert.ElementsMatch(t, []string{"ext-a", "ext-b"}, gotNames)
 }

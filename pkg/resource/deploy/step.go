@@ -1737,7 +1737,7 @@ func (s *ExtensionParameterizeStep) Ref() apitype.ExtensionRef { return s.ref }
 func (s *ExtensionParameterizeStep) Extension() apitype.Extension { return s.extension }
 
 func (s *ExtensionParameterizeStep) Apply() (resource.Status, StepCompleteFunc, error) {
-	version, err := semver.ParseTolerant(s.extension.Version)
+	version, err := semver.Parse(s.extension.Version)
 	if err != nil {
 		s.cts.MustReject(err)
 		return resource.StatusUnknown, nil, fmt.Errorf("could not parse provider version: %w", err)
@@ -2344,6 +2344,16 @@ func getProvider(s Step, override plugin.Provider) (plugin.Provider, error) {
 	provider, ok := s.Deployment().GetProvider(ref)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider '%v' for resource %v", s.Provider(), s.URN())
+	}
+	// Extension resources need their provider parameterized before any provider op.
+	// No-op when the register-resource path already queued the parameterize step.
+	if res := s.Res(); res != nil && res.ExtensionRef != "" {
+		ctx := s.Deployment().ctx.Base()
+		if err := s.Deployment().ensureExtensionParameterized(
+			ctx, ref, apitype.ExtensionRef(res.ExtensionRef),
+		); err != nil {
+			return nil, err
+		}
 	}
 	return provider, nil
 }

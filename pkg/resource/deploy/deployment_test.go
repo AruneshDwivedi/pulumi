@@ -23,6 +23,7 @@ import (
 
 	"github.com/pulumi/pulumi/pkg/v3/secrets/b64"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/promise"
 	sdkproviders "github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -147,30 +148,45 @@ func TestLookupOrRegisterExtension(t *testing.T) {
 	extensionA := apitype.ExtensionRef("extension-a")
 	extensionB := apitype.ExtensionRef("extension-b")
 
-	// First call: nothing registered yet -> we get a CompletionSource to fulfill.
-	existing1, created1 := d.LookupOrRegisterExtension(provA, extensionA)
-	require.Nil(t, existing1, "first call should not return an existing promise")
-	require.NotNil(t, created1, "first call should return a fresh CompletionSource")
+	// sentinelStep is a stand-in for an emitted parameterize step. The helper only
+	// returns whatever createStep returns; tests don't actually execute it.
+	type sentinelStep struct{ Step }
+	sentinel := &sentinelStep{}
 
-	// Second call for the same (provider, ref): we get the existing promise to wait on.
-	// The CompletionSource is nil because we are NOT the one doing the work.
-	existing2, created2 := d.LookupOrRegisterExtension(provA, extensionA)
-	require.Nil(t, created2, "duplicate registration must not mint a second CompletionSource")
-	require.NotNil(t, existing2, "duplicate registration must hand back the in-flight promise")
+	var capturedCS *promise.CompletionSource[struct{}]
+	createCalls := 0
+	create := func(cs *promise.CompletionSource[struct{}]) Step {
+		createCalls++
+		capturedCS = cs
+		return sentinel
+	}
 
-	// Verify the returned promise is the one tied to our original CompletionSource:
-	// fulfilling created should make existing2 resolve.
-	created1.MustFulfill(struct{}{})
-	_, err := existing2.Result(t.Context())
-	require.NoError(t, err, "existing promise should resolve after the first caller fulfills")
+	// First call: nothing registered yet -> createStep is invoked and its step returned.
+	promise1, step1 := d.LookupOrRegisterExtension(provA, extensionA, create)
+	require.Equal(t, 1, createCalls)
+	require.Same(t, Step(sentinel), step1, "first call should hand back the constructed step")
+	require.NotNil(t, promise1)
+	require.NotNil(t, capturedCS)
 
-	// Different ref under the same provider -> separate entry, new CompletionSource.
-	existingY, createdY := d.LookupOrRegisterExtension(provA, extensionB)
-	require.Nil(t, existingY)
-	require.NotNil(t, createdY, "different ref under same provider must be tracked independently")
+	// Second call for the same (provider, ref): createStep must not run again,
+	// the returned step is nil, but the promise is the same one tied to capturedCS.
+	promise2, step2 := d.LookupOrRegisterExtension(provA, extensionA, create)
+	require.Equal(t, 1, createCalls, "duplicate registration must not invoke createStep again")
+	require.Nil(t, step2, "duplicate registration must not return a step")
+	require.NotNil(t, promise2)
 
-	// Same ref under a different provider -> separate entry, new CompletionSource.
-	existingB, createdB := d.LookupOrRegisterExtension(provB, extensionA)
-	require.Nil(t, existingB)
-	require.NotNil(t, createdB, "same ref under a different provider must be tracked independently")
+	// Fulfilling the original CompletionSource resolves the second caller's promise.
+	capturedCS.MustFulfill(struct{}{})
+	_, err := promise2.Result(t.Context())
+	require.NoError(t, err)
+
+	// Different ref under the same provider -> independent.
+	_, stepY := d.LookupOrRegisterExtension(provA, extensionB, create)
+	require.Equal(t, 2, createCalls)
+	require.Same(t, Step(sentinel), stepY)
+
+	// Same ref under a different provider -> independent.
+	_, stepB := d.LookupOrRegisterExtension(provB, extensionA, create)
+	require.Equal(t, 3, createCalls)
+	require.Same(t, Step(sentinel), stepB)
 }

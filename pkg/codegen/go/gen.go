@@ -4513,10 +4513,8 @@ func generatePackageContextMap(tool string, pkg schema.PackageReference, goInfo 
 		}
 	}
 
-	// Extension-parameterized packages don't get their own Provider class — they
-	// reuse the base provider their extension was applied to.
-	isExtension := def.ExtensionParameterization != nil
-	if !isExtension && def.Provider != nil {
+	// Extension-parameterized packages don't get their own Provider class
+	if def.ExtensionParameterization == nil && def.Provider != nil {
 		scanResource(def.Provider)
 	}
 	for _, r := range def.Resources {

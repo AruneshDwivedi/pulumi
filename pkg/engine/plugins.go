@@ -695,11 +695,12 @@ func replacementParamName(pd workspace.PackageDescriptor) string {
 	return pd.Parameterization.Name
 }
 
-// samePluginSource reports whether two descriptors resolve to the same plugin:
-// same binary Name and the same replacement parameterization, if any. A bridge
-// parameterized as "scaleway" and a native "scaleway" provider are different
-// sources; an extension and its plain base are the same source.
-func samePluginSource(a, b workspace.PackageDescriptor) bool {
+// samePackage reports whether two descriptors resolve to the same package.
+// Parameterization doesn't change the plugin binary, only the package: a
+// bridge parameterized as "scaleway" and a native "scaleway" provider are
+// different packages sharing nothing; an extension and its plain base are
+// distinct packages sharing the same plugin.
+func samePackage(a, b workspace.PackageDescriptor) bool {
 	return a.Name == b.Name && replacementParamName(a) == replacementParamName(b)
 }
 
@@ -813,7 +814,7 @@ func computeDefaultProviderPackages(
 		name := tokens.Package(p.PackageName())
 
 		if seenPlugin, has := defaultProviderPlugins[name]; has {
-			if !samePluginSource(seenPlugin, p) {
+			if !samePackage(seenPlugin, p) {
 				return nil, ambigiousPluginSourceError{name, seenPlugin, p}
 			}
 

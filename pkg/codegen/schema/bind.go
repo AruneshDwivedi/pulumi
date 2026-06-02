@@ -162,6 +162,14 @@ func bindSpec(spec PackageSpec, languages map[string]Language, loader Loader,
 		}
 	}
 
+	// A package may carry at most one of Parameterization or
+	// ExtensionParameterization — the two forms are mutually exclusive.
+	if spec.Parameterization != nil && spec.ExtensionParameterization != nil {
+		diags = diags.Append(errorf("#/extensionParameterization",
+			"package %q sets both parameterization and extensionParameterization; only one may be set",
+			spec.Name))
+	}
+
 	types, pkgDiags, err := newBinder(spec.Info(), packageSpecSource{&spec}, loader, nil)
 	diags = diags.Extend(pkgDiags)
 	if err != nil {
