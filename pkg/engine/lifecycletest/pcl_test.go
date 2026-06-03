@@ -16,6 +16,7 @@ package lifecycletest
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -1192,16 +1193,10 @@ func TestPclSnippetReferenceFollowsAlias(t *testing.T) {
 		"References should be rewritten from the aliased URN to the canonical (post-rename) URN")
 }
 
-// TestPclSnippetResourceOptionsProtect checks that a snippet can declare resource options. The
-// snippet body uses an `options { ... }` block to set `protect = true`; after the update the
-// synthesized resource should carry Protect = true in its state.
-//
-// Currently skipped: the snippet binder (pcl.BindResource) rejects all top-level blocks with
-// "unexpected block 'options'", and the snippet source's RegisterResource call does not yet
-// forward Protect/etc. Unskip once both pieces are wired up.
-func TestPclSnippetResourceOptionsProtect(t *testing.T) {
+// TestPclSnippetResourceOptions checks that a snippet's `options { ... }` block flows through to
+// the engine: each option is parsed, evaluated, and lands on the synthesized resource's state.
+func TestPclSnippetResourceOptions(t *testing.T) {
 	t.Parallel()
-	t.Skip("snippets do not yet support resource option blocks; see pcl.bindInputFile + snippet_source.go")
 
 	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, nil, nil, nil)
 
@@ -1226,6 +1221,16 @@ func TestPclSnippetResourceOptionsProtect(t *testing.T) {
 			Code: `propA = true
 options {
     protect = true
+    retainOnDelete = true
+    ignoreChanges = [propA]
+    additionalSecretOutputs = [propA]
+    replaceOnChanges = [propA]
+    deleteBeforeReplace = true
+    customTimeouts = {
+        create = "5m"
+        update = "10m"
+        delete = "15m"
+    }
 }`,
 		},
 	}
@@ -1233,7 +1238,6 @@ options {
 		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
 	require.NoError(t, err)
 
-	// Find the snippet-synthesized resource and assert Protect was applied.
 	var snippetRes *resource.State
 	for _, r := range snap.Resources {
 		if r.Type == tokens.Type("pkgA:index:res") {
@@ -1242,5 +1246,137 @@ options {
 		}
 	}
 	require.NotNil(t, snippetRes, "snippet-synthesized resource should exist")
-	require.True(t, snippetRes.Protect, "expected snippet to set Protect = true on the resource")
+	require.True(t, snippetRes.Protect, "expected protect to flow through")
+	require.True(t, snippetRes.RetainOnDelete, "expected retainOnDelete to flow through")
+	require.Equal(t, []string{"propA"}, snippetRes.IgnoreChanges, "expected ignoreChanges to flow through")
+	require.Equal(t, []resource.PropertyKey{"propA"}, snippetRes.AdditionalSecretOutputs,
+		"expected additionalSecretOutputs to flow through")
+	require.Equal(t, []string{"propA"}, snippetRes.ReplaceOnChanges, "expected replaceOnChanges to flow through")
+	require.NotNil(t, snippetRes.CustomTimeouts, "expected customTimeouts to flow through")
+	require.Equal(t, 5.0*60, snippetRes.CustomTimeouts.Create, "create timeout")
+	require.Equal(t, 10.0*60, snippetRes.CustomTimeouts.Update, "update timeout")
+	require.Equal(t, 15.0*60, snippetRes.CustomTimeouts.Delete, "delete timeout")
+}
+
+// TestPclSnippetResourceOptionsResourceRefs checks the resource-typed options (dependsOn, deletedWith,
+// replaceWith) — the snippet refers to another (custom) resource via the References map and uses it
+// on each option; after the update the snippet resource's state should carry the referenced URN.
+func TestPclSnippetResourceOptionsResourceRefs(t *testing.T) {
+	t.Parallel()
+
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, nil, nil, nil)
+
+	// Register a custom resource from the main program that the snippet will reference.
+	var targetURN resource.URN
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		resp, err := monitor.RegisterResource("pkgA:index:res", "target", true, deploytest.ResourceOptions{
+			Inputs: resource.PropertyMap{"propA": resource.NewProperty(true)},
+		})
+		if err != nil {
+			return err
+		}
+		targetURN = resp.URN
+		return nil
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			T:     t,
+			HostF: deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+	require.NotEmpty(t, targetURN, "target URN should have been captured")
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "snippet-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			References: map[string]string{
+				"target": string(targetURN),
+			},
+			Code: `propA = true
+options {
+    dependsOn = [target]
+    deletedWith = target
+    replaceWith = [target]
+}`,
+		},
+	}
+
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	var snippetRes *resource.State
+	for _, r := range snap.Resources {
+		if r.URN.Name() == "snippet-resource" {
+			snippetRes = r
+			break
+		}
+	}
+	require.NotNil(t, snippetRes, "snippet-synthesized resource should exist")
+	require.Contains(t, snippetRes.Dependencies, targetURN, "expected dependsOn to include the target URN")
+	require.Equal(t, targetURN, snippetRes.DeletedWith, "expected deletedWith to point at the target")
+	require.Contains(t, snippetRes.ReplaceWith, targetURN, "expected replaceWith to include the target URN")
+}
+
+// TestPclSnippetResourceOptionsAlias checks that a snippet's `options { aliases = [...] }` flows
+// through to the engine: a snippet renamed between updates should refresh in place when its old
+// URN is listed as an alias rather than triggering a delete+create.
+func TestPclSnippetResourceOptionsAlias(t *testing.T) {
+	t.Parallel()
+
+	var created, deleted []resource.URN
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, &created, nil, &deleted)
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			T:     t,
+			HostF: deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	// First update creates a resource at "old-name".
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "old-name", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code:       `propA = true`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+	require.Len(t, created, 1)
+	require.Empty(t, deleted)
+
+	oldURN := created[0]
+
+	// Second update renames to "new-name" but declares the old URN as an alias — no delete should occur.
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "new-name", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code: fmt.Sprintf(`propA = true
+options {
+    aliases = [%q]
+}`, string(oldURN)),
+		},
+	}
+	_, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.NoError(t, err)
+	require.Len(t, created, 1, "alias should have prevented a second create")
+	require.Empty(t, deleted, "alias should have prevented a delete")
 }

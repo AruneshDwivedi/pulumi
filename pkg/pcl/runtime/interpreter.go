@@ -883,7 +883,10 @@ func unwrapOutputs(value resource.PropertyValue) (resource.PropertyValue, []reso
 	return value, nil
 }
 
-func unwrapResource(value resource.PropertyValue) (string, resource.PropertyValue, error) {
+// UnwrapResource extracts the urn (string) and id (PropertyValue) from a resource-shaped property value (an object
+// with `urn` and `id` fields), unwrapping any output wrapper. Returns an error if the value is not such a resource
+// or if the URN is not a known string.
+func UnwrapResource(value resource.PropertyValue) (string, resource.PropertyValue, error) {
 	value, _ = unwrapOutputs(value)
 	if !value.IsObject() {
 		return "", resource.PropertyValue{}, fmt.Errorf("expected resource object, got %s", value.TypeString())
@@ -1263,7 +1266,7 @@ func (i *Interpreter) registerResourceWith(
 
 						parent, ok := obj["parent"]
 						if ok && !parent.IsNull() && !parent.IsComputed() {
-							urn, _, err := unwrapResource(parent)
+							urn, _, err := UnwrapResource(parent)
 							if err != nil {
 								return cty.NilVal, fmt.Errorf("parent: %w", err)
 							}
@@ -1301,7 +1304,7 @@ func (i *Interpreter) registerResourceWith(
 					if v.IsNull() || v.IsComputed() {
 						continue
 					}
-					urn, _, err := unwrapResource(v)
+					urn, _, err := UnwrapResource(v)
 					if err != nil {
 						return cty.NilVal, fmt.Errorf("dependsOn: %w", err)
 					}
@@ -1410,7 +1413,7 @@ func (i *Interpreter) registerResourceWith(
 					if v.IsNull() || v.IsComputed() {
 						continue
 					}
-					urn, _, err := unwrapResource(v)
+					urn, _, err := UnwrapResource(v)
 					if err != nil {
 						return cty.NilVal, fmt.Errorf("replaceWith: %w", err)
 					}
@@ -1547,7 +1550,7 @@ func (i *Interpreter) registerResourceWith(
 				return cty.NilVal, diags
 			}
 			if !deletedWith.IsNull() && !deletedWith.IsComputed() {
-				urn, _, err := unwrapResource(deletedWith)
+				urn, _, err := UnwrapResource(deletedWith)
 				if err != nil {
 					return cty.NilVal, fmt.Errorf("deletedWith: %w", err)
 				}
@@ -1578,7 +1581,7 @@ func (i *Interpreter) registerResourceWith(
 				return cty.NilVal, diags
 			}
 			if !parent.IsNull() && !parent.IsComputed() {
-				urn, _, err := unwrapResource(parent)
+				urn, _, err := UnwrapResource(parent)
 				if err != nil {
 					return cty.NilVal, fmt.Errorf("parent: %w", err)
 				}
@@ -1594,7 +1597,7 @@ func (i *Interpreter) registerResourceWith(
 				return cty.NilVal, diags
 			}
 			if !provider.IsNull() && !provider.IsComputed() {
-				urn, id, err := unwrapResource(provider)
+				urn, id, err := UnwrapResource(provider)
 				if err != nil {
 					return cty.NilVal, fmt.Errorf("provider: %w", err)
 				}
@@ -1621,7 +1624,7 @@ func (i *Interpreter) registerResourceWith(
 				psopt := map[string]string{}
 				if providers.IsObject() {
 					for k, v := range providers.ObjectValue() {
-						urn, id, err := unwrapResource(v)
+						urn, id, err := UnwrapResource(v)
 						if err != nil {
 							return cty.NilVal, fmt.Errorf("providers: %w", err)
 						}
@@ -1635,7 +1638,7 @@ func (i *Interpreter) registerResourceWith(
 					}
 				} else if providers.IsArray() {
 					for _, v := range providers.ArrayValue() {
-						urn, id, err := unwrapResource(v)
+						urn, id, err := UnwrapResource(v)
 						if err != nil {
 							return cty.NilVal, fmt.Errorf("providers: %w", err)
 						}
@@ -1859,7 +1862,7 @@ func (i *Interpreter) registerComponent(ctx context.Context, component *pcl.Comp
 			return diags
 		}
 		if !parent.IsNull() && !parent.IsComputed() {
-			urn, _, err := unwrapResource(parent)
+			urn, _, err := UnwrapResource(parent)
 			if err != nil {
 				return hcl.Diagnostics{{
 					Severity: hcl.DiagError,

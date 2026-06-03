@@ -166,7 +166,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		if len(extras) > 0 {
 			bindOpts = append(bindOpts, pcl.ExtraScopeVariables(extras))
 		}
-		attributes, resType, diags := pcl.BindResource(file, res, bindOpts...)
+		attributes, resType, snippetOptions, diags := pcl.BindResource(file, res, bindOpts...)
 		if diags.HasErrors() {
 			fail(fmt.Errorf("binding resource: %v", diags))
 			return
@@ -250,7 +250,27 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 				return
 			}
 			for name, outs := range resolved {
-				ctyVal, err := pclruntime.PropertyValueToCty(context.TODO(), nil, resource.NewProperty(outs))
+				ref := refs[name]
+				// Shape the reference as a resource value: {urn, id, ...outputs}, wrapped in an Output marked
+				// known with the URN as its dependency. This is what makes `comp.value` traverse like a normal
+				// output read and, more importantly, what makes `parent = comp` / `dependsOn = [comp]` /
+				// `deletedWith = comp` typecheck and unwrap to the URN — they call UnwrapResource which expects
+				// an object with `urn` and `id` fields. The id is not tracked by the broker; we stub it as an
+				// empty string the same way the interpreter does for component references.
+				obj := make(resource.PropertyMap, len(outs)+2)
+				for k, v := range outs {
+					obj[k] = v
+				}
+				obj["urn"] = resource.NewProperty(string(ref.urn))
+				if _, ok := obj["id"]; !ok {
+					obj["id"] = resource.NewProperty("")
+				}
+				wrapped := resource.NewProperty(resource.Output{
+					Element:      resource.NewProperty(obj),
+					Dependencies: []resource.URN{ref.urn},
+					Known:        true,
+				})
+				ctyVal, err := pclruntime.PropertyValueToCty(context.TODO(), nil, wrapped)
 				if err != nil {
 					fail(fmt.Errorf("converting outputs for reference %q: %w", name, err))
 					return
@@ -280,7 +300,7 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			return
 		}
 
-		_, err = monitor.RegisterResource(context.TODO(), &pulumirpc.RegisterResourceRequest{
+		registerReqResource := &pulumirpc.RegisterResourceRequest{
 			Type:            s.snippet.Type,
 			Name:            s.snippet.Name,
 			Custom:          true,
@@ -288,7 +308,13 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			PackageRef:      registerResp.GetRef(),
 			AcceptSecrets:   true,
 			AcceptResources: true,
-		})
+		}
+		if err := applySnippetOptions(evalCtx, snippetOptions, registerReqResource); err != nil {
+			fail(fmt.Errorf("snippet options: %w", err))
+			return
+		}
+
+		_, err = monitor.RegisterResource(context.TODO(), registerReqResource)
 		if err != nil {
 			fail(fmt.Errorf("register snippet resource: %w", err))
 			return
@@ -296,6 +322,495 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 		cts.Fulfill(struct{}{})
 	}()
 	return cts.Promise()
+}
+
+// applySnippetOptions evaluates each non-nil option expression on opts and writes the corresponding field on req.
+// Mirrors the resource-options handling in pcl/runtime/interpreter.go's registerResourceWith — a snippet is just a
+// resource registration without the surrounding program, so it should accept the same set of options.
+func applySnippetOptions(
+	evalCtx *pclruntime.EvalContext, opts *pcl.ResourceOptions, req *pulumirpc.RegisterResourceRequest,
+) error {
+	if opts == nil {
+		return nil
+	}
+
+	// eval is a small helper that runs an expression and returns the value, treating "poisoned" results as errors
+	// (snippets can't propagate poison the way the interpreter can; there's no downstream resource to skip).
+	eval := func(name string, expr model.Expression) (resource.PropertyValue, bool, error) {
+		v, poison, diags := evalCtx.Evaluate(expr)
+		if poison != nil {
+			return resource.PropertyValue{}, false, fmt.Errorf("%s: poisoned (%s)", name, *poison)
+		}
+		if diags.HasErrors() {
+			return resource.PropertyValue{}, false, fmt.Errorf("%s: %v", name, diags)
+		}
+		// Treat null/computed as "unset" so authors can write conditional expressions naturally.
+		if v.IsNull() || v.IsComputed() {
+			return v, false, nil
+		}
+		return v, true, nil
+	}
+
+	if opts.AdditionalSecretOutputs != nil {
+		v, ok, err := eval("additionalSecretOutputs", opts.AdditionalSecretOutputs)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("additionalSecretOutputs must be an array of strings")
+			}
+			var out []string
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				if !e.IsString() {
+					return errors.New("additionalSecretOutputs must be an array of strings")
+				}
+				out = append(out, e.StringValue())
+			}
+			req.AdditionalSecretOutputs = out
+		}
+	}
+	if opts.Aliases != nil {
+		v, ok, err := eval("aliases", opts.Aliases)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("aliases must be an array of strings or alias objects")
+			}
+			var aliasOpts []*pulumirpc.Alias
+			for _, a := range v.ArrayValue() {
+				switch {
+				case a.IsString():
+					aliasOpts = append(aliasOpts, &pulumirpc.Alias{
+						Alias: &pulumirpc.Alias_Urn{Urn: a.StringValue()},
+					})
+				case a.IsObject():
+					obj := a.ObjectValue()
+					spec := &pulumirpc.Alias_Spec{}
+					setString := func(field resource.PropertyKey, setter func(string)) error {
+						attr, ok := obj[field]
+						if ok && !attr.IsNull() && !attr.IsComputed() {
+							if !attr.IsString() {
+								return fmt.Errorf("%s must be a string", field)
+							}
+							setter(attr.StringValue())
+						}
+						return nil
+					}
+					if err := setString("name", func(s string) { spec.Name = s }); err != nil {
+						return err
+					}
+					if err := setString("type", func(s string) { spec.Type = s }); err != nil {
+						return err
+					}
+					if noParent, ok := obj["noParent"]; ok && !noParent.IsNull() && !noParent.IsComputed() {
+						if !noParent.IsBool() {
+							return errors.New("noParent must be a boolean")
+						}
+						spec.Parent = &pulumirpc.Alias_Spec_NoParent{NoParent: noParent.BoolValue()}
+					}
+					if parent, ok := obj["parent"]; ok && !parent.IsNull() && !parent.IsComputed() {
+						urn, _, err := pclruntime.UnwrapResource(parent)
+						if err != nil {
+							return fmt.Errorf("parent: %w", err)
+						}
+						spec.Parent = &pulumirpc.Alias_Spec_ParentUrn{ParentUrn: urn}
+					}
+					aliasOpts = append(aliasOpts, &pulumirpc.Alias{Alias: &pulumirpc.Alias_Spec_{Spec: spec}})
+				default:
+					return errors.New("aliases must be an array of strings or alias objects")
+				}
+			}
+			req.Aliases = aliasOpts
+		}
+	}
+	if opts.CustomTimeouts != nil {
+		v, ok, err := eval("customTimeouts", opts.CustomTimeouts)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsObject() {
+				return errors.New("customTimeouts must be an object")
+			}
+			vals := map[string]string{}
+			for k, e := range v.ObjectValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				if !e.IsString() {
+					return fmt.Errorf("customTimeouts.%s must be a string", k)
+				}
+				vals[string(k)] = e.StringValue()
+			}
+			req.CustomTimeouts = &pulumirpc.RegisterResourceRequest_CustomTimeouts{
+				Create: vals["create"],
+				Update: vals["update"],
+				Delete: vals["delete"],
+			}
+		}
+	}
+	if opts.DeleteBeforeReplace != nil {
+		v, ok, err := eval("deleteBeforeReplace", opts.DeleteBeforeReplace)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsBool() {
+				return errors.New("deleteBeforeReplace must be a boolean or null")
+			}
+			req.DeleteBeforeReplace = v.BoolValue()
+			req.DeleteBeforeReplaceDefined = true
+		}
+	}
+	if opts.DeletedWith != nil {
+		v, ok, err := eval("deletedWith", opts.DeletedWith)
+		if err != nil {
+			return err
+		}
+		if ok {
+			urn, _, err := pclruntime.UnwrapResource(v)
+			if err != nil {
+				return fmt.Errorf("deletedWith: %w", err)
+			}
+			req.DeletedWith = urn
+		}
+	}
+	if opts.DependsOn != nil {
+		v, ok, err := eval("dependsOn", opts.DependsOn)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("dependsOn must be an array of resource objects")
+			}
+			var deps []string
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				urn, _, err := pclruntime.UnwrapResource(e)
+				if err != nil {
+					return fmt.Errorf("dependsOn: %w", err)
+				}
+				deps = append(deps, urn)
+			}
+			req.Dependencies = append(req.Dependencies, deps...)
+		}
+	}
+	if opts.EnvVarMappings != nil {
+		v, ok, err := eval("envVarMappings", opts.EnvVarMappings)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsObject() {
+				return errors.New("envVarMappings must be an object mapping env var names to input property keys")
+			}
+			mappings := map[string]string{}
+			for k, e := range v.ObjectValue() {
+				if e.IsNull() || e.IsComputed() || !e.IsString() {
+					return errors.New("envVarMappings must be an object mapping env var names to input property keys")
+				}
+				mappings[string(k)] = e.StringValue()
+			}
+			req.EnvVarMappings = mappings
+		}
+	}
+	if opts.HideDiffs != nil {
+		v, ok, err := eval("hideDiffs", opts.HideDiffs)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("hideDiffs must be an array of strings")
+			}
+			out := []string{}
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				if !e.IsString() {
+					return errors.New("hideDiffs must be an array of strings")
+				}
+				out = append(out, e.StringValue())
+			}
+			req.HideDiffs = out
+		}
+	}
+	if opts.Hooks != nil {
+		v, ok, err := eval("hooks", opts.Hooks)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsObject() {
+				return errors.New("hooks must be an object mapping hook types to hook names")
+			}
+			binding := &pulumirpc.RegisterResourceRequest_ResourceHooksBinding{}
+			for hookType, hookList := range v.ObjectValue() {
+				if hookList.IsNull() || hookList.IsComputed() {
+					continue
+				}
+				if !hookList.IsArray() {
+					return fmt.Errorf("hooks.%s must be an array of hook names", hookType)
+				}
+				var names []string
+				for idx, h := range hookList.ArrayValue() {
+					if h.IsNull() || h.IsComputed() {
+						continue
+					}
+					if !h.IsString() {
+						return fmt.Errorf("hooks.%s[%d] must be a reference to a named hook", hookType, idx)
+					}
+					names = append(names, h.StringValue())
+				}
+				switch hookType {
+				case "beforeCreate":
+					binding.BeforeCreate = append(binding.BeforeCreate, names...)
+				case "afterCreate":
+					binding.AfterCreate = append(binding.AfterCreate, names...)
+				case "beforeUpdate":
+					binding.BeforeUpdate = append(binding.BeforeUpdate, names...)
+				case "afterUpdate":
+					binding.AfterUpdate = append(binding.AfterUpdate, names...)
+				case "beforeDelete":
+					binding.BeforeDelete = append(binding.BeforeDelete, names...)
+				case "afterDelete":
+					binding.AfterDelete = append(binding.AfterDelete, names...)
+				default:
+					return fmt.Errorf("invalid hook type: %s", hookType)
+				}
+			}
+			if len(binding.BeforeCreate)+len(binding.AfterCreate)+
+				len(binding.BeforeUpdate)+len(binding.AfterUpdate)+
+				len(binding.BeforeDelete)+len(binding.AfterDelete) > 0 {
+				req.Hooks = binding
+			}
+		}
+	}
+	if opts.IgnoreChanges != nil {
+		v, ok, err := eval("ignoreChanges", opts.IgnoreChanges)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("ignoreChanges must be an array of strings")
+			}
+			out := []string{}
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				if !e.IsString() {
+					return errors.New("ignoreChanges must be an array of strings")
+				}
+				out = append(out, e.StringValue())
+			}
+			req.IgnoreChanges = out
+		}
+	}
+	if opts.ImportID != nil {
+		v, ok, err := eval("import", opts.ImportID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsString() {
+				return errors.New("import must be a string")
+			}
+			req.ImportId = v.StringValue()
+		}
+	}
+	if opts.Parent != nil {
+		v, ok, err := eval("parent", opts.Parent)
+		if err != nil {
+			return err
+		}
+		if ok {
+			urn, _, err := pclruntime.UnwrapResource(v)
+			if err != nil {
+				return fmt.Errorf("parent: %w", err)
+			}
+			req.Parent = urn
+		}
+	}
+	if opts.PluginDownloadURL != nil {
+		v, ok, err := eval("pluginDownloadURL", opts.PluginDownloadURL)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsString() {
+				return errors.New("pluginDownloadURL must be a string")
+			}
+			req.PluginDownloadURL = v.StringValue()
+		}
+	}
+	if opts.Protect != nil {
+		v, ok, err := eval("protect", opts.Protect)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsBool() {
+				return errors.New("protect must be a boolean or null")
+			}
+			b := v.BoolValue()
+			req.Protect = &b
+		}
+	}
+	if opts.Provider != nil {
+		v, ok, err := eval("provider", opts.Provider)
+		if err != nil {
+			return err
+		}
+		if ok {
+			urn, id, err := pclruntime.UnwrapResource(v)
+			if err != nil {
+				return fmt.Errorf("provider: %w", err)
+			}
+			idstr := plugin.UnknownStringValue
+			if id.IsString() {
+				idstr = id.StringValue()
+			}
+			req.Provider = fmt.Sprintf("%s::%s", urn, idstr)
+		}
+	}
+	if opts.Providers != nil {
+		v, ok, err := eval("providers", opts.Providers)
+		if err != nil {
+			return err
+		}
+		if ok {
+			// Providers is either a map (pkg name -> provider) or a list of providers keyed by their URN's pkg name.
+			ps := map[string]string{}
+			switch {
+			case v.IsObject():
+				for k, e := range v.ObjectValue() {
+					urn, id, err := pclruntime.UnwrapResource(e)
+					if err != nil {
+						return fmt.Errorf("providers: %w", err)
+					}
+					idstr := plugin.UnknownStringValue
+					if id.IsString() {
+						idstr = id.StringValue()
+					}
+					ps[string(k)] = fmt.Sprintf("%s::%s", urn, idstr)
+				}
+			case v.IsArray():
+				for _, e := range v.ArrayValue() {
+					urn, id, err := pclruntime.UnwrapResource(e)
+					if err != nil {
+						return fmt.Errorf("providers: %w", err)
+					}
+					_, _, pkg, diags := pcl.DecomposeToken(string(resource.URN(urn).Type()), hcl.Range{})
+					contract.Assertf(!diags.HasErrors(), "invalid token format from URN %s", urn)
+					idstr := plugin.UnknownStringValue
+					if id.IsString() {
+						idstr = id.StringValue()
+					}
+					ps[pkg] = fmt.Sprintf("%s::%s", urn, idstr)
+				}
+			default:
+				return errors.New("providers must be an array of provider objects or a map keyed by pkg name")
+			}
+			req.Providers = ps
+		}
+	}
+	if opts.ReplaceOnChanges != nil {
+		v, ok, err := eval("replaceOnChanges", opts.ReplaceOnChanges)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("replaceOnChanges must be an array of strings")
+			}
+			out := []string{}
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				if !e.IsString() {
+					return errors.New("replaceOnChanges must be an array of strings")
+				}
+				out = append(out, e.StringValue())
+			}
+			req.ReplaceOnChanges = out
+		}
+	}
+	if opts.ReplaceWith != nil {
+		v, ok, err := eval("replaceWith", opts.ReplaceWith)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsArray() {
+				return errors.New("replaceWith must be an array of resources")
+			}
+			var out []string
+			for _, e := range v.ArrayValue() {
+				if e.IsNull() || e.IsComputed() {
+					continue
+				}
+				urn, _, err := pclruntime.UnwrapResource(e)
+				if err != nil {
+					return fmt.Errorf("replaceWith: %w", err)
+				}
+				out = append(out, urn)
+			}
+			req.ReplaceWith = out
+		}
+	}
+	if opts.ReplacementTrigger != nil {
+		// ReplacementTrigger accepts any value (null/computed included) — marshal whatever evaluator returns.
+		v, _, diags := evalCtx.Evaluate(opts.ReplacementTrigger)
+		if diags.HasErrors() {
+			return fmt.Errorf("replacementTrigger: %v", diags)
+		}
+		marshalled, err := plugin.MarshalPropertyValue("replacementTrigger", v, plugin.MarshalOptions{
+			KeepUnknowns: true, KeepSecrets: true, KeepResources: true, KeepOutputValues: true,
+		})
+		if err != nil {
+			return fmt.Errorf("replacementTrigger: %w", err)
+		}
+		req.ReplacementTrigger = marshalled
+	}
+	if opts.RetainOnDelete != nil {
+		v, ok, err := eval("retainOnDelete", opts.RetainOnDelete)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsBool() {
+				return errors.New("retainOnDelete must be a boolean or null")
+			}
+			b := v.BoolValue()
+			req.RetainOnDelete = &b
+		}
+	}
+	if opts.Version != nil {
+		v, ok, err := eval("version", opts.Version)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if !v.IsString() {
+				return errors.New("version must be a string")
+			}
+			req.Version = v.StringValue()
+		}
+	}
+	return nil
 }
 
 func (s *snippet) lookupPackageDescriptor(pkg string) *schema.PackageDescriptor {

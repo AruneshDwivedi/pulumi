@@ -178,9 +178,11 @@ func NonStrictBindOptions() []BindOption {
 
 // bindInputFile is the binder setup shared by BindFunction and BindResource: it constructs a binder, registers the
 // standard PCL builtins, walks the file's top-level attributes, and returns the bound arguments along with each
-// input's name range (for diagnostic Subjects).
+// input's name range (for diagnostic Subjects). It also returns a single optional top-level `options` block (still
+// in raw HCL form so callers can bind it with a scope appropriate to the resource being instantiated); any other
+// block or a duplicate `options` block is reported as a diagnostic.
 func bindInputFile(file *syntax.File, opts ...BindOption) (
-	*binder, []*model.Attribute, map[string]hcl.Range, hcl.Diagnostics,
+	*binder, []*model.Attribute, map[string]hcl.Range, *hclsyntax.Block, hcl.Diagnostics,
 ) {
 	var options bindOptions
 	for _, o := range opts {
@@ -230,15 +232,24 @@ func bindInputFile(file *syntax.File, opts ...BindOption) (
 		})
 	}
 
+	var optionsBlock *hclsyntax.Block
 	for _, block := range file.Body.Blocks {
-		diagnostics = append(diagnostics, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("unexpected block %q", block.Type),
-			Subject:  &block.TypeRange,
-		})
+		if block.Type != "options" {
+			diagnostics = append(diagnostics, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("unexpected block %q", block.Type),
+				Subject:  &block.TypeRange,
+			})
+			continue
+		}
+		if optionsBlock != nil {
+			diagnostics = append(diagnostics, duplicateBlock(block.Type, block.TypeRange))
+			continue
+		}
+		optionsBlock = block
 	}
 
-	return b, args, inputRanges, diagnostics
+	return b, args, inputRanges, optionsBlock, diagnostics
 }
 
 // BindFunction binds a PCL file as an invoke function input and returns the bound arguments along with the model
@@ -248,7 +259,10 @@ func BindFunction(
 	file *syntax.File, fn *schema.Function,
 	opts ...BindOption,
 ) ([]*model.Attribute, model.Type, hcl.Diagnostics) {
-	b, args, inputRanges, diagnostics := bindInputFile(file, opts...)
+	b, args, inputRanges, optionsBlock, diagnostics := bindInputFile(file, opts...)
+	if optionsBlock != nil {
+		diagnostics = append(diagnostics, unsupportedBlock(optionsBlock.Type, optionsBlock.TypeRange))
+	}
 
 	argProperties := make(map[string]model.Type, len(args))
 	for _, item := range args {
@@ -281,12 +295,13 @@ func BindFunction(
 
 // BindResource binds a PCL file as a resource input and returns the bound arguments along with the model type the
 // inputs were typechecked against. The model type is used downstream (e.g. by RewriteConversions during evaluation)
-// so that conversions reference the same type instances the binder built.
+// so that conversions reference the same type instances the binder built. If the file contains a top-level `options`
+// block its contents are bound as ResourceOptions and returned alongside the inputs.
 func BindResource(
 	file *syntax.File, res *schema.Resource,
 	opts ...BindOption,
-) ([]*model.Attribute, model.Type, hcl.Diagnostics) {
-	b, args, inputRanges, diagnostics := bindInputFile(file, opts...)
+) ([]*model.Attribute, model.Type, *ResourceOptions, hcl.Diagnostics) {
+	b, args, inputRanges, optionsBlock, diagnostics := bindInputFile(file, opts...)
 
 	// resolveInputUnions expects a name → expression map; rebuild it from args rather than tracking the same thing
 	// twice during attribute binding.
@@ -300,11 +315,60 @@ func BindResource(
 	diagnostics = append(diagnostics,
 		typecheckObjectArgs(inputType, file.Body.Range().Ptr(), args, inputRanges)...)
 
-	if diagnostics.HasErrors() {
-		return nil, nil, diagnostics
+	var resourceOptions *ResourceOptions
+	if optionsBlock != nil {
+		// Bind the options block with a scope that knows the resource's input properties. This is what lets
+		// `ignoreChanges = [propA]` (and the other property-list options) resolve `propA` against the resource
+		// schema rather than treating it as an unknown identifier.
+		boundOptions, blockDiags := model.BindBlock(
+			optionsBlock,
+			&snippetOptionsScopes{root: b.root, inputType: inputType},
+			b.tokens,
+			b.options.modelOptions()...)
+		diagnostics = append(diagnostics, blockDiags...)
+
+		ro, optDiags := bindResourceOptions(boundOptions)
+		diagnostics = append(diagnostics, optDiags...)
+		resourceOptions = ro
 	}
 
-	return args, inputType, diagnostics
+	if diagnostics.HasErrors() {
+		return nil, nil, nil, diagnostics
+	}
+
+	return args, inputType, resourceOptions, diagnostics
+}
+
+// snippetOptionsScopes is the Scopes implementation used to bind a snippet's `options { ... }` block. It mirrors
+// the per-attribute scope behaviour of optionsScopes (used for regular resource declarations) but takes the input
+// type directly rather than a BaseResource, since snippets don't have one.
+type snippetOptionsScopes struct {
+	root      *model.Scope
+	inputType model.Type
+}
+
+func (s *snippetOptionsScopes) GetScopesForBlock(block *hclsyntax.Block) (model.Scopes, hcl.Diagnostics) {
+	return model.StaticScope(s.root), nil
+}
+
+func (s *snippetOptionsScopes) GetScopeForAttribute(attr *hclsyntax.Attribute) (*model.Scope, hcl.Diagnostics) {
+	switch attr.Name {
+	case "ignoreChanges", "hideDiffs", "replaceOnChanges", "additionalSecretOutputs":
+		obj, ok := model.ResolveOutputs(s.inputType).(*model.ObjectType)
+		if !ok {
+			return s.root, nil
+		}
+		scope := model.NewRootScope(syntax.None)
+		for k, t := range obj.Properties {
+			scope.Define(k, &ResourceProperty{
+				Path:         hcl.Traversal{hcl.TraverseRoot{Name: k}},
+				PropertyType: t,
+			})
+		}
+		return scope, nil
+	default:
+		return s.root, nil
+	}
 }
 
 // BindResourceList binds a PCL file as a resource list input and returns the bound arguments. This is used for `do` to
@@ -313,7 +377,10 @@ func BindResourceList(
 	file *syntax.File, res *schema.Resource,
 	opts ...BindOption,
 ) ([]*model.Attribute, model.Type, hcl.Diagnostics) {
-	b, args, inputRanges, diagnostics := bindInputFile(file, opts...)
+	b, args, inputRanges, optionsBlock, diagnostics := bindInputFile(file, opts...)
+	if optionsBlock != nil {
+		diagnostics = append(diagnostics, unsupportedBlock(optionsBlock.Type, optionsBlock.TypeRange))
+	}
 
 	if res.ListInputs == nil {
 		diagnostics = append(diagnostics, &hcl.Diagnostic{
