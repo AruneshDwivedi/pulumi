@@ -255,6 +255,95 @@ func (e *escConfigEditor) Save(ctx context.Context) error {
 	return nil
 }
 
+// Imports returns the names of the entries in the environment's top-level `imports` sequence, or an
+// empty slice if absent. Both plain scalar entries and structured entries (e.g. {env: {merge: false}})
+// are reported by name. Unlike workspace.Environment.Imports it does not append the synthetic "yaml"
+// marker for inline values: that marker is a local-Environment artifact and is meaningless for the
+// backing env's real imports list.
+func (e *escConfigEditor) Imports() []string {
+	seq, ok := escEncoding.YAMLSyntax{Node: &e.doc}.Get(resource.PropertyPath{"imports"})
+	if !ok || seq.Kind != yaml.SequenceNode {
+		return []string{}
+	}
+	imports := make([]string, 0, len(seq.Content))
+	for _, n := range seq.Content {
+		if name, ok := importEntryName(n); ok {
+			imports = append(imports, name)
+		}
+	}
+	return imports
+}
+
+// importEntryName returns the environment name of an `imports` entry: the scalar value for a plain
+// entry, or the single key for a structured entry like {env: {merge: false}}.
+func importEntryName(n *yaml.Node) (string, bool) {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return n.Value, true
+	case yaml.MappingNode:
+		// A well-formed structured import is a single-key mapping ({env: {merge: ...}}), so Content has
+		// exactly the key and its value. Reject multi-key mappings rather than matching the first key.
+		if len(n.Content) == 2 && n.Content[0].Kind == yaml.ScalarNode {
+			return n.Content[0].Value, true
+		}
+		return "", false
+	case yaml.DocumentNode, yaml.SequenceNode, yaml.AliasNode:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// AddImports appends each env to the top-level `imports` sequence, creating it if absent. It mirrors
+// workspace.Environment.Append: entries are appended in order and not de-duplicated.
+func (e *escConfigEditor) AddImports(envs ...string) error {
+	seq, err := e.ensureImportsNode()
+	if err != nil {
+		return err
+	}
+	for _, env := range envs {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: env})
+	}
+	return nil
+}
+
+// RemoveImport removes the last entry matching env (by name, so structured entries like
+// {env: {merge: false}} match too) from the top-level `imports` sequence, mirroring
+// workspace.Environment.Remove. Removing an absent entry is a no-op. The (possibly empty) sequence
+// node is left in place rather than deleting the `imports` key, so a head comment attached to that
+// key survives removal of the last import.
+func (e *escConfigEditor) RemoveImport(env string) error {
+	seq, ok := escEncoding.YAMLSyntax{Node: &e.doc}.Get(resource.PropertyPath{"imports"})
+	if !ok || seq.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for i := len(seq.Content) - 1; i >= 0; i-- {
+		if name, ok := importEntryName(seq.Content[i]); ok && name == env {
+			seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (e *escConfigEditor) ensureImportsNode() (*yaml.Node, error) {
+	seq, ok := escEncoding.YAMLSyntax{Node: &e.doc}.Get(resource.PropertyPath{"imports"})
+	if ok {
+		// An existing `imports` that is not a sequence is a malformed env; overwriting it would
+		// silently discard it, so refuse rather than clobber.
+		if seq.Kind != yaml.SequenceNode {
+			return nil, errors.New("environment's `imports` is not a sequence")
+		}
+		return seq, nil
+	}
+	seq, err := escEncoding.YAMLSyntax{Node: &e.doc}.Set(
+		nil, resource.PropertyPath{"imports"}, yaml.Node{Kind: yaml.SequenceNode})
+	if err != nil {
+		return nil, fmt.Errorf("internal error: %w", err)
+	}
+	return seq, nil
+}
+
 func (e *escConfigEditor) ensureValuesNode() (*yaml.Node, error) {
 	valuesNode, ok := escEncoding.YAMLSyntax{Node: &e.doc}.Get(resource.PropertyPath{"values"})
 	if ok {

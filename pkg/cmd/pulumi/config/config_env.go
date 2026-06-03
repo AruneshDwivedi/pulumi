@@ -48,6 +48,8 @@ func newConfigEnvCmd(ws pkgWorkspace.Context, stackRef *string, configFile *stri
 		configFile:       configFile,
 	}
 
+	var jsonOut bool
+
 	cmd := &cobra.Command{
 		Use:   "env",
 		Short: "Manage ESC environments for a stack",
@@ -56,7 +58,13 @@ func newConfigEnvCmd(ws pkgWorkspace.Context, stackRef *string, configFile *stri
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			impl.stdout = cmd.OutOrStdout()
 		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			impl.initArgs()
+			return impl.runStatus(cmd, jsonOut)
+		},
 	}
+
+	cmd.Flags().BoolVarP(&jsonOut, "json", "j", false, "Emit output as JSON")
 
 	constrictor.AttachArguments(cmd, constrictor.NoArgs)
 
@@ -111,6 +119,25 @@ func (cmd *configEnvCmd) initArgs() {
 	cmd.ssml = cmdStack.NewStackSecretsManagerLoaderFromEnv()
 }
 
+func (cmd *configEnvCmd) resolveStack(ctx context.Context) (*workspace.Project, backend.Stack, error) {
+	project, _, err := cmd.ws.ReadProject()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Status is read-only: resolve the current stack without offering to create one.
+	stack, err := cmd.requireStack(
+		ctx,
+		cmd.diags,
+		cmd.ws,
+		cmdBackend.DefaultLoginManager,
+		*cmd.stackRef,
+		cmdStack.LoadOnly,
+		display.Options{Color: cmd.color},
+		*cmd.configFile,
+	)
+	return project, stack, err
+}
+
 func (cmd *configEnvCmd) loadEnvPreamble(ctx context.Context,
 ) (*workspace.ProjectStack, *workspace.Project, *backend.Stack, error) {
 	opts := display.Options{Color: cmd.color}
@@ -148,11 +175,21 @@ func (cmd *configEnvCmd) loadEnvPreamble(ctx context.Context,
 }
 
 func (cmd *configEnvCmd) listStackEnvironments(ctx context.Context, jsonOut bool) error {
-	projectStack, _, _, err := cmd.loadEnvPreamble(ctx)
+	projectStack, _, stack, err := cmd.loadEnvPreamble(ctx)
 	if err != nil {
 		return err
 	}
-	imports := projectStack.Environment.Imports()
+
+	var imports []string
+	if (*stack).ConfigLocation().IsRemote {
+		editor, err := newESCConfigEditor(ctx, *stack)
+		if err != nil {
+			return err
+		}
+		imports = editor.Imports()
+	} else {
+		imports = projectStack.Environment.Imports()
+	}
 
 	if jsonOut {
 		if len(imports) == 0 {
@@ -183,11 +220,35 @@ func (cmd *configEnvCmd) listStackEnvironments(ctx context.Context, jsonOut bool
 	return nil
 }
 
+// importOp describes a mutation to a stack's environment imports. Exactly one of add/remove applies:
+// addEnvs is non-empty for `config env add`, removeEnv is non-empty for `config env rm`. It is
+// applied to a *workspace.ProjectStack.Environment for local stacks and to the backing ESC
+// environment's `imports` list for remote stacks.
+type importOp struct {
+	addEnvs   []string
+	removeEnv string
+}
+
+func (op importOp) applyLocal(stack *workspace.ProjectStack) {
+	if len(op.addEnvs) > 0 {
+		stack.Environment = stack.Environment.Append(op.addEnvs...)
+		return
+	}
+	stack.Environment = stack.Environment.Remove(op.removeEnv)
+}
+
+func (op importOp) applyRemote(editor *escConfigEditor) error {
+	if len(op.addEnvs) > 0 {
+		return editor.AddImports(op.addEnvs...)
+	}
+	return editor.RemoveImport(op.removeEnv)
+}
+
 func (cmd *configEnvCmd) editStackEnvironment(
 	ctx context.Context,
 	showSecrets bool,
 	yes bool,
-	edit func(stack *workspace.ProjectStack) error,
+	op importOp,
 ) error {
 	if !yes && !cmd.interactive {
 		return backenderr.ErrNonInteractiveRequiresYes
@@ -198,9 +259,11 @@ func (cmd *configEnvCmd) editStackEnvironment(
 		return err
 	}
 
-	if err := edit(projectStack); err != nil {
-		return err
+	if (*stack).ConfigLocation().IsRemote {
+		return cmd.editRemoteStackEnvironment(ctx, yes, *stack, op)
 	}
+
+	op.applyLocal(projectStack)
 
 	if err := listConfig(
 		ctx,
@@ -230,6 +293,146 @@ func (cmd *configEnvCmd) editStackEnvironment(
 
 	if err = cmd.saveProjectStack(ctx, *stack, projectStack, *cmd.configFile); err != nil {
 		return fmt.Errorf("saving stack config: %w", err)
+	}
+	return nil
+}
+
+// editRemoteStackEnvironment applies an import change to the backing ESC environment's `imports`
+// list. The full merged-config display is skipped (it would require re-resolving the environment);
+// the resulting imports are printed instead, then the change is uploaded via editor.Save, which
+// surfaces a concurrent-modification (409) error as retryable.
+func (cmd *configEnvCmd) editRemoteStackEnvironment(
+	ctx context.Context,
+	yes bool,
+	stack backend.Stack,
+	op importOp,
+) error {
+	editor, err := newESCConfigEditor(ctx, stack)
+	if err != nil {
+		return err
+	}
+
+	if err := op.applyRemote(editor); err != nil {
+		return err
+	}
+
+	imports := editor.Imports()
+	if len(imports) == 0 {
+		ui.Fprintf(cmd.stdout, "This stack configuration has no environments listed.\n")
+	} else {
+		printImportsTable(cmd.stdout, imports)
+	}
+
+	if !yes {
+		fmt.Fprintln(cmd.stdout)
+
+		response := ui.PromptUser("Save?", []string{"yes", "no"}, "yes", cmdutil.GetGlobalColorization())
+		switch response {
+		case "no":
+			return errors.New("canceled")
+		case "yes":
+		}
+	}
+
+	if err := editor.Save(ctx); err != nil {
+		return fmt.Errorf("saving stack config: %w", err)
+	}
+	return nil
+}
+
+func printImportsTable(w io.Writer, imports []string) {
+	rows := make([]cmdutil.TableRow, 0, len(imports))
+	for _, imp := range imports {
+		rows = append(rows, cmdutil.TableRow{Columns: []string{imp}})
+	}
+	ui.FprintTable(w, cmdutil.Table{
+		Headers: []string{"ENVIRONMENTS"},
+		Rows:    rows,
+	}, nil)
+}
+
+// runStatus implements bare `pulumi config env`, reporting where the stack's configuration lives:
+// the linked ESC environment and its imports for a remote stack, or the local config file for a
+// local stack. When no stack context can be resolved (logged out, none selected, or
+// non-interactive) it preserves today's behavior of printing the command's help.
+func (cmd *configEnvCmd) runStatus(cobraCmd *cobra.Command, jsonOut bool) error {
+	ctx := cobraCmd.Context()
+
+	project, stack, err := cmd.resolveStack(ctx)
+	if err != nil {
+		// Bare `config env` historically printed help without contacting a backend. Preserve that when no
+		// stack resolves so the offline help path does not regress; explicit subcommands (ls/add/rm) still
+		// surface a real resolution error via loadEnvPreamble.
+		return cobraCmd.Help()
+	}
+
+	if stack.ConfigLocation().IsRemote {
+		return cmd.runRemoteStatus(ctx, stack, jsonOut)
+	}
+	return cmd.runLocalStatus(ctx, project, stack, jsonOut)
+}
+
+func (cmd *configEnvCmd) runRemoteStatus(ctx context.Context, stack backend.Stack, jsonOut bool) error {
+	loc := stack.ConfigLocation()
+	envRef := ""
+	if loc.EscEnv != nil {
+		envRef = *loc.EscEnv
+	}
+
+	editor, err := newESCConfigEditor(ctx, stack)
+	if err != nil {
+		return err
+	}
+	imports := editor.Imports()
+
+	if jsonOut {
+		return ui.FprintJSON(cmd.stdout, struct {
+			Source      string   `json:"source"`
+			Environment string   `json:"environment"`
+			Imports     []string `json:"imports"`
+		}{Source: "remote", Environment: envRef, Imports: imports})
+	}
+
+	ui.Fprintf(cmd.stdout, "This stack's configuration is stored remotely in environment %q.\n", envRef)
+	if len(imports) == 0 {
+		ui.Fprintf(cmd.stdout, "It imports no environments.\n")
+	} else {
+		printImportsTable(cmd.stdout, imports)
+	}
+	return nil
+}
+
+func (cmd *configEnvCmd) runLocalStatus(
+	ctx context.Context, project *workspace.Project, stack backend.Stack, jsonOut bool,
+) error {
+	configPath := *cmd.configFile
+	if configPath == "" {
+		_, path, err := workspace.DetectProjectStackPath(stack.Ref().Name().Q())
+		if err != nil {
+			return fmt.Errorf("getting configuration file: %w", err)
+		}
+		configPath = path
+	}
+
+	projectStack, err := cmd.loadProjectStack(ctx, cmd.diags, project, stack, *cmd.configFile)
+	if err != nil {
+		return err
+	}
+	imports := projectStack.Environment.Imports()
+
+	if jsonOut {
+		return ui.FprintJSON(cmd.stdout, struct {
+			Source     string   `json:"source"`
+			ConfigFile string   `json:"configFile"`
+			Imports    []string `json:"imports"`
+		}{Source: "local", ConfigFile: configPath, Imports: imports})
+	}
+
+	ui.Fprintf(cmd.stdout, "This stack's configuration is stored locally in %q.\n", configPath)
+	if len(imports) == 0 {
+		ui.Fprintf(cmd.stdout, "It imports no environments.\n")
+	} else {
+		printImportsTable(cmd.stdout, imports)
 	}
 	return nil
 }
