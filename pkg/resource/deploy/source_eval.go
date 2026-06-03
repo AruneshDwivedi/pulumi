@@ -2597,6 +2597,11 @@ func (rm *resmon) RegisterResource(ctx context.Context,
 				"resource monitor shut down while waiting for construct to complete")
 		}
 
+		// TODO: state.Aliases is left empty here. The custom-resource path populates it from the matched alias
+		// URN inside the step generator (see step_generator.go's getOldResource flow), but for remote components
+		// the Construct response only carries URN+Outputs and we don't surface the request's aliases into the
+		// state. Downstream code that reads state.Aliases (notably Snapshot.NormalizeURNReferences) therefore
+		// can't rewrite references to a renamed remote component.
 		result = &RegisterResult{State: &resource.State{URN: constructResult.URN, Outputs: constructResult.Outputs}}
 
 		// The provider may have returned OutputValues in "Outputs", we need to downgrade them to Computed or

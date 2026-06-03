@@ -207,6 +207,13 @@
                 "descriptor": {
                     "description": "The package descriptor for the resource type.",
                     "$ref": "#/$defs/packageDescriptorV1"
+                },
+                "references": {
+                    "description": "External resources the snippet code may refer to by HCL identifier. The map key is the identifier used inside the code; the value is the URN of the target resource.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 }
             },
             "required": ["name", "type", "code", "descriptor"],

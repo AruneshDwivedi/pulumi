@@ -191,6 +191,13 @@ func (snap *DeploymentV3) ToUntypedDeployment(version int, features []string) (*
 // later in the deployment.  But until they are, we still want to ensure that any serialization of the snapshot uses URN
 // references which do not need to be indirected through any alias lookups, and which instead refer directly to the URN
 // of a resource in the resources map.
+//
+// TODO: this is a near-duplicate of (*deploy.Snapshot).NormalizeURNReferences in pkg/resource/deploy/snapshot.go.
+// They share the same alias-resolution logic but operate on different types (the on-disk DeploymentV3 vs the runtime
+// Snapshot) and have drifted apart in small ways (e.g. error messages, snippet-reference rewriting was added to both
+// at different times). Any new field that carries URNs needs both implementations updated in lockstep, so they
+// should be consolidated — ideally by sharing a single fixURN walker that each wrapper drives over its own
+// representation.
 func (snap *DeploymentV3) NormalizeURNReferences() (*DeploymentV3, error) {
 	if snap == nil {
 		return nil, nil
@@ -264,6 +271,15 @@ func (snap *DeploymentV3) NormalizeURNReferences() (*DeploymentV3, error) {
 		}
 	}
 
+	// Rewrite References on every snippet. Each value is a URN that may have been an alias for a resource that
+	// is now stored under its canonical URN; updating in place keeps future updates resolving cleanly through
+	// the broker.
+	for i := range snap.Snippets {
+		for k, v := range snap.Snippets[i].References {
+			snap.Snippets[i].References[k] = string(fixURN(resource.URN(v)))
+		}
+	}
+
 	return snap, nil
 }
 
@@ -289,6 +305,10 @@ type SnippetV1 struct {
 	Code string `json:"code" yaml:"code"`
 	// Descriptor identifies the package that owns the resource type.
 	Descriptor PackageDescriptorV1 `json:"descriptor" yaml:"descriptor"`
+	// References declares external resources that the snippet's Code may refer to by HCL identifier. The map
+	// key is the identifier used inside Code; the value is the URN of the target resource. Subject to URN
+	// normalisation (aliases) on each snapshot write.
+	References map[string]string `json:"references,omitempty" yaml:"references,omitempty"`
 }
 
 // PackageDescriptorV1 is the serialized form of a package descriptor for a snippet.
