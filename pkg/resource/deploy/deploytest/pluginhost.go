@@ -199,7 +199,7 @@ func wrapProviderWithGrpc(provider plugin.Provider) (plugin.Provider, io.Closer,
 		contract.IgnoreClose(wrapper)
 		return nil, nil, fmt.Errorf("could not connect to resource provider service: %w", err)
 	}
-	wrapped := plugin.NewProviderWithClient(nil, provider.Pkg(), pulumirpc.NewResourceProviderClient(conn), false)
+	wrapped := plugin.NewProviderWithClient(nil, pulumirpc.NewResourceProviderClient(conn), false)
 	return wrapped, wrapper, nil
 }
 
@@ -542,13 +542,6 @@ func (host *pluginHost) AttachDebugger(_ plugin.DebugSpec) bool {
 
 func (host *pluginHost) Analyzer(nm tokens.QName) (plugin.Analyzer, error) {
 	return host.PolicyAnalyzer(nm, "", nil)
-}
-
-func (host *pluginHost) EnsurePlugins(plugins []workspace.PluginDescriptor, kinds plugin.Flags) error {
-	if host.isClosed() {
-		return ErrHostIsClosed
-	}
-	return nil
 }
 
 func (host *pluginHost) ResolvePlugin(

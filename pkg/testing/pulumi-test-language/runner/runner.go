@@ -635,16 +635,30 @@ func (eng *languageTestServer) PrepareLanguageTests(
 	}, nil
 }
 
-func GetProviderVersion(provider plugin.Provider) (semver.Version, error) {
-	pkg := provider.Pkg()
-	info, err := provider.GetPluginInfo(context.TODO())
+func GetProviderVersion(ctx context.Context, provider plugin.Provider) (semver.Version, error) {
+	info, err := provider.GetPluginInfo(ctx)
 	if err != nil {
-		return semver.Version{}, fmt.Errorf("get plugin info for %s: %w", pkg, err)
+		return semver.Version{}, fmt.Errorf("get plugin info: %w", err)
 	}
 	if info.Version == nil {
-		return semver.Version{}, fmt.Errorf("provider %s has no version", pkg)
+		return semver.Version{}, errors.New("provider has no version")
 	}
 	return *info.Version, nil
+}
+
+func GetProviderName(ctx context.Context, provider plugin.Provider) (string, error) {
+	resp, err := provider.GetSchema(ctx, plugin.GetSchemaRequest{})
+	if err != nil {
+		return "", err
+	}
+	var s schema.PartialPackageSpec
+	if err := json.Unmarshal(resp.Schema, &s); err != nil {
+		return "", fmt.Errorf("unable to unmarshal schema for name: %w", err)
+	}
+	if s.Name == "" {
+		return "", errors.New("invalid schema: empty name")
+	}
+	return s.Name, nil
 }
 
 func hasDependency(pkg *schema.Package, dep string) bool {
@@ -726,14 +740,13 @@ func (eng *languageTestServer) RunLanguageTest(
 
 	// And now replace the context host with our own test host
 	host := &testHost{
-		engine:                      eng,
-		ctx:                         pctx,
-		host:                        pctx.Host,
-		runtime:                     languageClient,
-		runtimeName:                 token.LanguagePluginName,
-		providers:                   make(map[string]func() (plugin.Provider, error)),
-		connections:                 make(map[plugin.Provider]io.Closer),
-		skipEnsurePluginsValidation: test.SkipEnsurePluginsValidation,
+		engine:      eng,
+		ctx:         pctx,
+		host:        pctx.Host,
+		runtime:     languageClient,
+		runtimeName: token.LanguagePluginName,
+		providers:   make(map[string]func() (plugin.Provider, error)),
+		connections: make(map[plugin.Provider]io.Closer),
 	}
 
 	pctx.Host = host
@@ -756,14 +769,17 @@ func (eng *languageTestServer) RunLanguageTest(
 	// And fill that host with our test providers
 	for _, provider := range test.Providers {
 		p := provider()
-		version, err := GetProviderVersion(p)
+		version, err := GetProviderVersion(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		key := fmt.Sprintf("%s@%s", p.Pkg(), version)
+		pkg, err := GetProviderName(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%s@%s", pkg, version)
 
 		// If this is a provider that should be overridden using the languages plugin directory try and do that now.
-		pkg := p.Pkg().String()
 		if slices.Contains(test.LanguageProviders, pkg) {
 			cacheKey := fmt.Sprintf("%s@%s", key, token.TemporaryDirectory)
 			// The second return value indicates whether the result was loaded or stored
@@ -775,7 +791,7 @@ func (eng *languageTestServer) RunLanguageTest(
 			targetDirectory := filepath.Join(token.TemporaryDirectory, "providers", pkg)
 			if eng.providersCache[cacheKey] {
 				host.providers[key] = func() (plugin.Provider, error) {
-					pluginProvider, err := plugin.NewProviderFromPath(host, pctx, p.Pkg(), targetDirectory)
+					pluginProvider, err := plugin.NewProviderFromPath(host, pctx, targetDirectory)
 					if err != nil {
 						return nil, fmt.Errorf("load provider %s from %s: %w", pkg, targetDirectory, err)
 					}
@@ -817,7 +833,7 @@ func (eng *languageTestServer) RunLanguageTest(
 				}
 
 				host.providers[key] = func() (plugin.Provider, error) {
-					pluginProvider, err := plugin.NewProviderFromPath(host, pctx, p.Pkg(), targetDirectory)
+					pluginProvider, err := plugin.NewProviderFromPath(host, pctx, targetDirectory)
 					if err != nil {
 						return nil, fmt.Errorf("load provider %s from %s: %w", pkg, targetDirectory, err)
 					}
@@ -1391,96 +1407,101 @@ func runLanguageTests(
 		}
 
 		// Query the language plugin for what it thinks the project packages are, we expect to see the SDKs.
-		packages, err := languageClient.GetRequiredPackages(ctx, programInfo)
-		if err != nil {
-			return makeTestResponse(fmt.Sprintf("get required packages: %v", err)), nil
-		}
-		expectedPackages := []workspace.PackageDescriptor{}
-		for _, pkg := range programPackages {
-			if pkg.Name() == "pulumi" {
-				// Skip the pulumi package, the version for that is handled above.
-				continue
-			}
-
-			pkgDef, err := pkg.Definition()
+		// This is the conformance hook that used to live behind Host.EnsurePlugins: now that the engine ensures
+		// plugins inline, the runner checks GetRequiredPackages directly here. Tests opt out of the check with
+		// SkipEnsurePluginsValidation when the program intentionally diverges (e.g. version-pinning tests).
+		if !test.SkipEnsurePluginsValidation {
+			packages, err := languageClient.GetRequiredPackages(ctx, programInfo)
 			if err != nil {
-				return makeTestResponse(fmt.Sprintf("get package definition: %v", err)), nil
+				return makeTestResponse(fmt.Sprintf("get required packages: %v", err)), nil
 			}
-
-			var desc workspace.PackageDescriptor
-			if pkgDef.Parameterization == nil {
-				desc = workspace.PackageDescriptor{
-					PluginDescriptor: workspace.PluginDescriptor{
-						Name:    pkgDef.Name,
-						Version: pkgDef.Version,
-					},
+			expectedPackages := []workspace.PackageDescriptor{}
+			for _, pkg := range programPackages {
+				if pkg.Name() == "pulumi" {
+					// Skip the pulumi package, the version for that is handled above.
+					continue
 				}
-			} else {
-				desc = workspace.PackageDescriptor{
-					PluginDescriptor: workspace.PluginDescriptor{
-						Name:    pkgDef.Parameterization.BaseProvider.Name,
-						Version: &pkgDef.Parameterization.BaseProvider.Version,
-					},
-					Parameterization: &workspace.Parameterization{
-						Name:    pkgDef.Name,
-						Version: *pkgDef.Version,
-						Value:   pkgDef.Parameterization.Parameter,
-					},
+
+				pkgDef, err := pkg.Definition()
+				if err != nil {
+					return makeTestResponse(fmt.Sprintf("get package definition: %v", err)), nil
 				}
-			}
 
-			expectedPackages = append(expectedPackages, desc)
-		}
-
-		versionsMatch := func(expected, actual *semver.Version) bool {
-			if expected == nil && actual == nil {
-				return true
-			}
-			if expected == nil || actual == nil {
-				return false
-			}
-			return expected.EQ(*actual)
-		}
-		parameterizationsMatch := func(expected, actual *workspace.Parameterization) bool {
-			if expected == nil && actual == nil {
-				return true
-			}
-			if expected == nil || actual == nil {
-				return false
-			}
-			return expected.Name == actual.Name &&
-				versionsMatch(&expected.Version, &actual.Version) &&
-				slices.Equal(expected.Value, actual.Value)
-		}
-		for _, expectedPackage := range expectedPackages {
-			var found bool
-			for _, actual := range packages {
-				if actual.Name == expectedPackage.Name &&
-					versionsMatch(expectedPackage.Version, actual.Version) &&
-					parameterizationsMatch(expectedPackage.Parameterization, actual.Parameterization) {
-					found = true
-					break
+				var desc workspace.PackageDescriptor
+				if pkgDef.Parameterization == nil {
+					desc = workspace.PackageDescriptor{
+						PluginDescriptor: workspace.PluginDescriptor{
+							Name:    pkgDef.Name,
+							Version: pkgDef.Version,
+						},
+					}
+				} else {
+					desc = workspace.PackageDescriptor{
+						PluginDescriptor: workspace.PluginDescriptor{
+							Name:    pkgDef.Parameterization.BaseProvider.Name,
+							Version: &pkgDef.Parameterization.BaseProvider.Version,
+						},
+						Parameterization: &workspace.Parameterization{
+							Name:    pkgDef.Name,
+							Version: *pkgDef.Version,
+							Value:   pkgDef.Parameterization.Parameter,
+						},
+					}
 				}
+
+				expectedPackages = append(expectedPackages, desc)
 			}
 
-			if !found {
-				return makeTestResponse(fmt.Sprintf("missing expected package %v", expectedPackage)), nil
+			versionsMatch := func(expected, actual *semver.Version) bool {
+				if expected == nil && actual == nil {
+					return true
+				}
+				if expected == nil || actual == nil {
+					return false
+				}
+				return expected.EQ(*actual)
 			}
-		}
-		// For packages we need a symmetric check, we shouldn't have any packages that _aren't_ expected.
-		for _, actual := range packages {
-			var found bool
+			parameterizationsMatch := func(expected, actual *workspace.Parameterization) bool {
+				if expected == nil && actual == nil {
+					return true
+				}
+				if expected == nil || actual == nil {
+					return false
+				}
+				return expected.Name == actual.Name &&
+					versionsMatch(&expected.Version, &actual.Version) &&
+					slices.Equal(expected.Value, actual.Value)
+			}
 			for _, expectedPackage := range expectedPackages {
-				if actual.Name == expectedPackage.Name &&
-					versionsMatch(expectedPackage.Version, actual.Version) &&
-					parameterizationsMatch(expectedPackage.Parameterization, actual.Parameterization) {
-					found = true
-					break
+				var found bool
+				for _, actual := range packages {
+					if actual.Name == expectedPackage.Name &&
+						versionsMatch(expectedPackage.Version, actual.Version) &&
+						parameterizationsMatch(expectedPackage.Parameterization, actual.Parameterization) {
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					return makeTestResponse(fmt.Sprintf("missing expected package %v", expectedPackage)), nil
 				}
 			}
+			// For packages we need a symmetric check, we shouldn't have any packages that _aren't_ expected.
+			for _, actual := range packages {
+				var found bool
+				for _, expectedPackage := range expectedPackages {
+					if actual.Name == expectedPackage.Name &&
+						versionsMatch(expectedPackage.Version, actual.Version) &&
+						parameterizationsMatch(expectedPackage.Parameterization, actual.Parameterization) {
+						found = true
+						break
+					}
+				}
 
-			if !found {
-				return makeTestResponse(fmt.Sprintf("unexpected extra package %v", actual)), nil
+				if !found {
+					return makeTestResponse(fmt.Sprintf("unexpected extra package %v", actual)), nil
+				}
 			}
 		}
 
