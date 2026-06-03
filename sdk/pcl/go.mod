@@ -10,7 +10,7 @@ replace (
 
 require (
 	github.com/hashicorp/hcl/v2 v2.24.0
-	github.com/pulumi/pulumi/pkg/v3 v3.232.0
+	github.com/pulumi/pulumi/pkg/v3 v3.243.0
 	github.com/pulumi/pulumi/sdk/v3 v3.244.0
 	github.com/spf13/afero v1.15.0
 	github.com/stretchr/testify v1.11.1
