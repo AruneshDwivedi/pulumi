@@ -2347,13 +2347,13 @@ type PackageSpec struct {
 
 func (p *PackageSpec) Info() PackageInfoSpec {
 	return PackageInfoSpec{
-		Name:                      p.Name,
-		DisplayName:               p.DisplayName,
-		Version:                   p.Version,
-		Description:               p.Description,
-		Keywords:                  p.Keywords,
-		Homepage:                  p.Homepage,
-		License:                   p.License,
+		Name:                p.Name,
+		DisplayName:         p.DisplayName,
+		Version:             p.Version,
+		Description:         p.Description,
+		Keywords:            p.Keywords,
+		Homepage:            p.Homepage,
+		License:             p.License,
 		Attribution:         p.Attribution,
 		Repository:          p.Repository,
 		LogoURL:             p.LogoURL,

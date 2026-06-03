@@ -1540,7 +1540,9 @@ func TestMoveExtensionResource(t *testing.T) {
 	require.NoError(t, err)
 	sm := b64.NewBase64SecretsManager()
 
-	importStack := func(name string, resources []*resource.State, exts map[apitype.ExtensionRef]apitype.Extension) backend.Stack {
+	importStack := func(
+		name string, resources []*resource.State, exts map[apitype.ExtensionRef]apitype.Extension,
+	) backend.Stack {
 		snap := deploy.NewSnapshot(deploy.Manifest{}, sm, resources, nil, deploy.SnapshotMetadata{}, exts)
 		udep, err := stack.SerializeUntypedDeployment(ctx, snap, nil)
 		require.NoError(t, err)
@@ -1588,12 +1590,12 @@ func TestMoveExtensionResourceDropsUnreferencedBlob(t *testing.T) {
 	sourceResources := []*resource.State{
 		{URN: providerURN, Type: "pulumi:providers:extbase::default_1_0_0", ID: "provider_id", Custom: true},
 		{
-			URN: resource.NewURN("sourceStack", "test", "", "extbase:index:Greeting", "stayBehind"),
+			URN:  resource.NewURN("sourceStack", "test", "", "extbase:index:Greeting", "stayBehind"),
 			Type: "extbase:index:Greeting", Provider: string(providerURN) + "::provider_id",
 			ExtensionRef: refKept,
 		},
 		{
-			URN: resource.NewURN("sourceStack", "test", "", "extbase:index:Greeting", "moveMe"),
+			URN:  resource.NewURN("sourceStack", "test", "", "extbase:index:Greeting", "moveMe"),
 			Type: "extbase:index:Greeting", Provider: string(providerURN) + "::provider_id",
 			ExtensionRef: refMoved,
 		},
@@ -1609,7 +1611,9 @@ func TestMoveExtensionResourceDropsUnreferencedBlob(t *testing.T) {
 	require.NoError(t, err)
 	sm := b64.NewBase64SecretsManager()
 
-	importStack := func(name string, resources []*resource.State, exts map[apitype.ExtensionRef]apitype.Extension) backend.Stack {
+	importStack := func(
+		name string, resources []*resource.State, exts map[apitype.ExtensionRef]apitype.Extension,
+	) backend.Stack {
 		snap := deploy.NewSnapshot(deploy.Manifest{}, sm, resources, nil, deploy.SnapshotMetadata{}, exts)
 		udep, err := stack.SerializeUntypedDeployment(ctx, snap, nil)
 		require.NoError(t, err)

@@ -94,15 +94,15 @@ func (sm *JournalSnapshotManager) Close() error {
 type JournalEntryKind int
 
 const (
-	JournalEntryBegin                  JournalEntryKind = 0
-	JournalEntrySuccess                JournalEntryKind = 1
-	JournalEntryFailure                JournalEntryKind = 2
-	JournalEntryRefreshSuccess         JournalEntryKind = 3
-	JournalEntryOutputs                JournalEntryKind = 4
-	JournalEntryWrite                  JournalEntryKind = 5
-	JournalEntrySecretsManager         JournalEntryKind = 6
-	JournalEntryRebuiltBaseState       JournalEntryKind = 7
-	JournalEntryExtensionParameterize  JournalEntryKind = 8
+	JournalEntryBegin                 JournalEntryKind = 0
+	JournalEntrySuccess               JournalEntryKind = 1
+	JournalEntryFailure               JournalEntryKind = 2
+	JournalEntryRefreshSuccess        JournalEntryKind = 3
+	JournalEntryOutputs               JournalEntryKind = 4
+	JournalEntryWrite                 JournalEntryKind = 5
+	JournalEntrySecretsManager        JournalEntryKind = 6
+	JournalEntryRebuiltBaseState      JournalEntryKind = 7
+	JournalEntryExtensionParameterize JournalEntryKind = 8
 )
 
 func (k JournalEntryKind) String() string {
