@@ -15,6 +15,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	sha256 "crypto/sha256"
@@ -57,6 +58,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/retry"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/nodejs/npm"
+	"github.com/pulumi/pulumi/sdk/v3/python/toolchain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -2990,4 +2992,205 @@ func (t AssertPerfBenchmark) ReportCommand(ctx context.Context, stats TestComman
 				stats.StepName, stats.ElapsedSeconds, maxDuration.Seconds())
 		}
 	}
+}
+
+// RunComponentSetup prepares a test component-provider fixture at dir. Serializes concurrent callers against the same
+// dir so parallel tests don't race on install.
+func RunComponentSetup(t *testing.T, dir string, runtime string) {
+	t.Helper()
+
+	ptesting.YarnInstallMutex.Lock()
+	defer ptesting.YarnInstallMutex.Unlock()
+
+	lockfile := filepath.Join(dir, ".lock")
+	mu := fsutil.NewFileMutex(lockfile)
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		if err := mu.Lock(); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for lock on %s", lockfile)
+		}
+		time.Sleep(time.Second)
+	}
+	defer func() {
+		require.NoError(t, mu.Unlock())
+	}()
+
+	switch runtime {
+	case NodeJSRuntime:
+		InstallNodejsDependencies(t, dir)
+		cmd := exec.Command("yarn", "run", "tsc")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "yarn run tsc in %s failed: %s", dir, out)
+	case PythonRuntime:
+		InstallPythonDependencies(t, dir)
+	default:
+		t.Fatalf("unsupported runtime %q for RunComponentSetup", runtime)
+	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// InstallNodejsDependencies installs the nodejs dependencies in dir via yarn and links the locally-built @pulumi/pulumi
+// SDK. The SDK is expected to be globally registered via `yarn link`.
+func InstallNodejsDependencies(t *testing.T, dir string) {
+	t.Helper()
+	pm, err := npm.ResolvePackageManager(npm.YarnPackageManager, dir)
+	require.NoError(t, err)
+
+	ptesting.YarnInstallMutex.Lock()
+	defer ptesting.YarnInstallMutex.Unlock()
+
+	retryNodejsCmd(t, dir, "yarn install", func() ([]byte, error) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		err := pm.Install(t.Context(), dir, false /* production */, stdout, stderr)
+		return append(stdout.Bytes(), stderr.Bytes()...), err
+	})
+	retryNodejsCmd(t, dir, "yarn link @pulumi/pulumi", func() ([]byte, error) {
+		cmd := exec.Command("yarn", "link", "@pulumi/pulumi")
+		cmd.Dir = dir
+		return cmd.CombinedOutput()
+	})
+}
+
+// InstallNodejsDependenciesWithLocalSDK installs the nodejs dependencies in dir via yarn and adds the locally-built
+// @pulumi/pulumi SDK as a file: dep (via `yarn add`). Unlike the symlink approach in InstallNodejsDependencies, this
+// copies the SDK into node_modules, which is required for tools that walk the module tree (ts-node ESM loader,
+// typescript version detection, jest sourcemap resolution).
+func InstallNodejsDependenciesWithLocalSDK(t *testing.T, dir string) {
+	t.Helper()
+	pm, err := npm.ResolvePackageManager(npm.YarnPackageManager, dir)
+	require.NoError(t, err)
+	coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "nodejs", "bin"))
+	require.NoError(t, err)
+
+	ptesting.YarnInstallMutex.Lock()
+	defer ptesting.YarnInstallMutex.Unlock()
+
+	retryNodejsCmd(t, dir, "yarn install", func() ([]byte, error) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		err := pm.Install(t.Context(), dir, false /* production */, stdout, stderr)
+		return append(stdout.Bytes(), stderr.Bytes()...), err
+	})
+	retryNodejsCmd(t, dir, "yarn add "+coreSDK, func() ([]byte, error) {
+		cmd := exec.Command("yarn", "add", coreSDK)
+		cmd.Dir = dir
+		return cmd.CombinedOutput()
+	})
+}
+
+func retryNodejsCmd(t *testing.T, dir, what string, fn func() ([]byte, error)) {
+	t.Helper()
+	var out []byte
+	var err error
+	for i := range 3 {
+		out, err = fn()
+		if err == nil {
+			return
+		}
+		t.Logf("%s in %s failed (attempt %d/3): %v\noutput: %s", what, dir, i+1, err, out)
+	}
+	t.Fatalf("%s in %s failed after 3 retries: %v\noutput: %s", what, dir, err, out)
+}
+
+// InstallPythonDependencies installs the python dependencies in dir and then layers the locally-built core SDK on top.
+func InstallPythonDependencies(t *testing.T, dir string) {
+	t.Helper()
+
+	dir, err := filepath.Abs(dir)
+	require.NoError(t, err)
+
+	hasPyproject := fileExists(filepath.Join(dir, "pyproject.toml"))
+	hasRequirements := fileExists(filepath.Join(dir, "requirements.txt"))
+	if hasPyproject || hasRequirements {
+		cmd := exec.Command("pulumi", "install")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "`%s` in %s failed with output: %s", cmd.String(), cmd.Dir, string(out))
+	}
+
+	coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
+	require.NoError(t, err)
+
+	opts := loadPythonOptions(t, dir)
+
+	if opts.Toolchain == toolchain.Uv {
+		if hasPyproject {
+			cmd := exec.Command("uv", "add", "--editable", coreSDK)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "`uv add --editable %s` in %s failed: %s", coreSDK, dir, string(out))
+			return
+		}
+		tc, err := toolchain.ResolveToolchain(opts)
+		require.NoError(t, err)
+		err = tc.EnsureVenv(t.Context(), dir,
+			false /* useLanguageVersionTools */, false, /* showOutput */
+			io.Discard, io.Discard)
+		require.NoError(t, err)
+		venvPath, err := tc.VirtualEnvPath(t.Context())
+		require.NoError(t, err)
+		cmd := exec.Command("uv", "pip", "install", "--python", venvPath, coreSDK)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "uv pip install %s in %s failed: %s", coreSDK, dir, out)
+		return
+	}
+
+	tc, err := toolchain.ResolveToolchain(opts)
+	require.NoError(t, err)
+	err = tc.EnsureVenv(t.Context(), dir,
+		false /* useLanguageVersionTools */, false, /* showOutput */
+		io.Discard, io.Discard)
+	require.NoError(t, err)
+	cmd, err := tc.ModuleCommand(t.Context(), "pip", "install", coreSDK)
+	require.NoError(t, err)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "pip install %s in %s failed: %s", coreSDK, dir, out)
+}
+
+func loadPythonOptions(t *testing.T, dir string) toolchain.PythonOptions {
+	t.Helper()
+	opts := toolchain.PythonOptions{
+		Root:      dir,
+		Toolchain: toolchain.Pip,
+	}
+
+	var rawOptions map[string]any
+	if path := filepath.Join(dir, "Pulumi.yaml"); fileExists(path) {
+		proj, err := workspace.LoadProject(path)
+		require.NoError(t, err)
+		rawOptions = proj.Runtime.Options()
+	} else if path := filepath.Join(dir, "PulumiPlugin.yaml"); fileExists(path) {
+		proj, err := workspace.LoadPluginProject(path)
+		require.NoError(t, err)
+		rawOptions = proj.Runtime.Options()
+	}
+
+	if venv, ok := rawOptions["virtualenv"].(string); ok && venv != "" {
+		opts.Virtualenv = venv
+	}
+	if tc, ok := rawOptions["toolchain"].(string); ok {
+		switch tc {
+		case "pip":
+			opts.Toolchain = toolchain.Pip
+		case "uv":
+			opts.Toolchain = toolchain.Uv
+		case "poetry":
+			opts.Toolchain = toolchain.Poetry
+		}
+	}
+
+	if opts.Virtualenv == "" && opts.Toolchain == toolchain.Pip {
+		opts.Virtualenv = "venv"
+	}
+	return opts
 }

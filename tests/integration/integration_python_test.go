@@ -40,7 +40,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
-	"github.com/pulumi/pulumi/sdk/v3/python/toolchain"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -780,7 +779,7 @@ func TestConstructSlowPython(t *testing.T) {
 	const testYarnLinkPulumiEnv = "PULUMI_TEST_YARN_LINK_PULUMI=true"
 
 	testDir := "construct_component_slow"
-	runComponentSetup(t, testDir)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent"), integration.NodeJSRuntime)
 
 	opts := &integration.ProgramTestOptions{
 		Env: []string{testYarnLinkPulumiEnv},
@@ -808,7 +807,8 @@ func TestConstructPlainPython(t *testing.T) {
 	t.Parallel()
 
 	testDir := "construct_component_plain"
-	runComponentSetup(t, testDir)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent"), integration.NodeJSRuntime)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent-python"), integration.PythonRuntime)
 
 	tests := []struct {
 		componentDir          string
@@ -877,7 +877,8 @@ func TestConstructMethodsPython(t *testing.T) {
 	t.Parallel()
 
 	testDir := "construct_component_methods"
-	runComponentSetup(t, testDir)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent"), integration.NodeJSRuntime)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent-python"), integration.PythonRuntime)
 
 	tests := []struct {
 		componentDir string
@@ -983,7 +984,8 @@ func TestConstructProviderPython(t *testing.T) {
 	t.Parallel()
 
 	const testDir = "construct_component_provider"
-	runComponentSetup(t, testDir)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent"), integration.NodeJSRuntime)
+	integration.RunComponentSetup(t, filepath.Join(testDir, "testcomponent-python"), integration.PythonRuntime)
 
 	tests := []struct {
 		componentDir string
@@ -1583,21 +1585,10 @@ func TestConfigGetterOverloads(t *testing.T) {
 	e.ImportDirectory("python/config-getter-types")
 
 	stackName := ptesting.RandomStackName()
-	e.RunCommand("pulumi", "install")
+	integration.InstallPythonDependencies(t, e.CWD)
 	e.RunCommand("pulumi", "login", "--cloud-url", e.LocalURL())
 	e.RunCommand("pulumi", "stack", "init", stackName)
 	defer e.RunCommand("pulumi", "stack", "rm", "--yes", "--stack", stackName)
-
-	// ProgramTest installs extra dependencies as editable packages using the `-e` flag, but typecheckers do not
-	// handle editable packages well. We have to manually install the SDK without `-e` flag instead.
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-	sdkPath := filepath.Join(cwd, "..", "..", "sdk", "python")
-	pythonBin := "./venv/bin/python"
-	if runtime.GOOS == "windows" {
-		pythonBin = ".\\venv\\Scripts\\python.exe"
-	}
-	e.RunCommand(pythonBin, "-m", "pip", "install", sdkPath)
 
 	// Add some config values
 	e.RunCommand("pulumi", "config", "set", "foo", "bar")
@@ -1758,7 +1749,7 @@ func TestPluginDebuggerAttachPython(t *testing.T) {
 	e.ImportDirectory(filepath.Join("debug-plugin"))
 	e.CWD = filepath.Join(e.CWD, "program")
 
-	installPythonProviderDependencies(t, filepath.Join(e.CWD, "..", "python-plugin"))
+	integration.InstallPythonDependencies(t, filepath.Join(e.CWD, "..", "python-plugin"))
 
 	e.RunCommand("pulumi", "package", "add", "../python-plugin")
 
@@ -1939,10 +1930,10 @@ func TestDynamicProviderPython(t *testing.T) {
 			e := ptesting.NewEnvironment(t)
 			defer e.DeleteIfNotFailed()
 			e.ImportDirectory(filepath.Join("python", "dynamic-provider", toolchain))
-			coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
-			require.NoError(t, err)
 			if toolchain == "poetry" {
 				e.RunCommand("pulumi", "install")
+				coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
+				require.NoError(t, err)
 				if runtime.GOOS == "windows" {
 					// Poetry requires the sdk to be on the same device as the project on windows.  Since the
 					// tmpdir is not guaranteed to be on the same device as the project, we need to copy the
@@ -1953,12 +1944,7 @@ func TestDynamicProviderPython(t *testing.T) {
 					e.RunCommand("poetry", "add", coreSDK)
 				}
 			} else {
-				f, err := os.OpenFile(filepath.Join(e.RootPath, "requirements.txt"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-				require.NoError(t, err)
-				_, err = fmt.Fprintln(f, coreSDK)
-				require.NoError(t, err)
-				require.NoError(t, f.Close())
-				e.RunCommand("pulumi", "install")
+				integration.InstallPythonDependencies(t, e.CWD)
 			}
 			e.RunCommand("pulumi", "login", "--cloud-url", e.LocalURL())
 			stackName := ptesting.RandomStackName()
@@ -2033,16 +2019,9 @@ func TestPythonComponentProviderRun(t *testing.T) {
 			integration.ProgramTest(t, &integration.ProgramTestOptions{
 				PrepareProject: func(info *engine.Projinfo) error {
 					providerPath := filepath.Join(info.Root, "..", "provider")
-					installPythonProviderDependencies(t, providerPath)
+					integration.InstallPythonDependencies(t, providerPath)
 					if runtime == "python" {
-						// Link the current version of the SDK into the project
-						coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
-						require.NoError(t, err)
-						f, err := os.OpenFile(filepath.Join(info.Root, "requirements.txt"), os.O_WRONLY|os.O_APPEND, 0o644)
-						require.NoError(t, err)
-						_, err = fmt.Fprintln(f, coreSDK)
-						require.NoError(t, err)
-						f.Close()
+						integration.InstallPythonDependencies(t, info.Root)
 					}
 					cmd := exec.Command("pulumi", "package", "add", providerPath)
 					cmd.Dir = info.Root
@@ -2113,7 +2092,7 @@ func TestPythonComponentProviderBootstraplessRun(t *testing.T) {
 		Dir:             filepath.Join("component_provider", "python", "bootstrap-less"),
 		RelativeWorkDir: "yaml",
 		PrepareProject: func(info *engine.Projinfo) error {
-			installPythonProviderDependencies(t, filepath.Join(info.Root, "..", "provider"))
+			integration.InstallPythonDependencies(t, filepath.Join(info.Root, "..", "provider"))
 			return nil
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
@@ -2132,7 +2111,7 @@ func TestPythonComponentProviderPackageRun(t *testing.T) {
 		Dir:             filepath.Join("component_provider", "python", "package"),
 		RelativeWorkDir: "yaml",
 		PrepareProject: func(info *engine.Projinfo) error {
-			installPythonProviderDependencies(t, filepath.Join(info.Root, "..", "provider"))
+			integration.InstallPythonDependencies(t, filepath.Join(info.Root, "..", "provider"))
 			return nil
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
@@ -2152,7 +2131,7 @@ func TestPythonComponentProviderFeatures(t *testing.T) {
 		RelativeWorkDir: "yaml",
 		Quick:           true,
 		PrepareProject: func(info *engine.Projinfo) error {
-			installPythonProviderDependencies(t, filepath.Join(info.Root, "..", "provider"))
+			integration.InstallPythonDependencies(t, filepath.Join(info.Root, "..", "provider"))
 			return nil
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
@@ -2178,7 +2157,7 @@ func TestPythonComponentProviderGetSchema(t *testing.T) {
 	e := ptesting.NewEnvironment(t)
 	e.ImportDirectory(filepath.Join("component_provider", "python", "component-provider-host", "provider"))
 	defer e.DeleteIfNotFailed()
-	installPythonProviderDependencies(t, e.RootPath)
+	integration.InstallPythonDependencies(t, e.RootPath)
 
 	// Run the command from a different, sibling, directory. This ensures that
 	// get-package does not rely on the current working directory.
@@ -2327,7 +2306,7 @@ func TestPythonComponentProviderRecursiveTypes(t *testing.T) {
 	require.NoError(t, err)
 	integration.ProgramTest(t, &integration.ProgramTestOptions{
 		PrepareProject: func(info *engine.Projinfo) error {
-			installPythonProviderDependencies(t, filepath.Join(testData, "provider"))
+			integration.InstallPythonDependencies(t, filepath.Join(testData, "provider"))
 			return nil
 		},
 		Dir: filepath.Join(testData, "yaml"),
@@ -2359,7 +2338,7 @@ func TestPythonComponentProviderException(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	integration.ProgramTest(t, &integration.ProgramTestOptions{
 		PrepareProject: func(info *engine.Projinfo) error {
-			installPythonProviderDependencies(t, filepath.Join(testData, "provider"))
+			integration.InstallPythonDependencies(t, filepath.Join(testData, "provider"))
 			return nil
 		},
 		Dir:           filepath.Join(testData, "yaml"),
@@ -2415,17 +2394,9 @@ func TestPythonComponentProviderResourceReference(t *testing.T) {
 					out, err := cmd.CombinedOutput()
 					require.NoError(t, err, "%s failed with: %s", cmd.String(), string(out))
 					providerPath := filepath.Join(info.Root, "..", "provider")
-					installPythonProviderDependencies(t, providerPath)
+					integration.InstallPythonDependencies(t, providerPath)
 					if runtime == "python" {
-						// Link the current version of the SDK into the project
-						coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
-						require.NoError(t, err)
-						coreSDK = strings.ReplaceAll(coreSDK, `\`, `\\`)
-						f, err := os.OpenFile(filepath.Join(info.Root, "requirements.txt"), os.O_WRONLY|os.O_APPEND, 0o644)
-						require.NoError(t, err)
-						_, err = fmt.Fprintln(f, coreSDK)
-						require.NoError(t, err)
-						f.Close()
+						integration.InstallPythonDependencies(t, info.Root)
 					}
 					cmd = exec.Command("pulumi", "package", "add", providerPath)
 					cmd.Dir = info.Root
@@ -2467,7 +2438,7 @@ func TestPythonComponentProviderInComponentProvider(t *testing.T) {
 			// For `provider` we need to generate `provider-nested`'s SDK and
 			// link it into the plugin.
 			providerPath := filepath.Join(info.Root, "..", "provider")
-			installPythonProviderDependencies(t, providerPath)
+			integration.InstallPythonDependencies(t, providerPath)
 			cmd := exec.Command("pulumi", "package", "add", providerNestedPath)
 			cmd.Dir = providerPath
 			out, err := cmd.CombinedOutput()
@@ -2486,53 +2457,6 @@ func TestPythonComponentProviderInComponentProvider(t *testing.T) {
 			require.Equal(t, "HELLO, PULUMI!", stack.Outputs["str_output"].(string))
 		},
 	})
-}
-
-func installPythonProviderDependencies(t *testing.T, dir string) {
-	t.Helper()
-
-	// Use `pulumi install` to install plugin dependencies
-	// This handles both pyproject.toml and requirements.txt automatically
-	cmd := exec.Command("pulumi", "install")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "`%s` in %s failed with output: %s", cmd.String(), cmd.Dir, string(out))
-
-	coreSDK, err := filepath.Abs(filepath.Join("..", "..", "sdk", "python"))
-	require.NoError(t, err)
-
-	if isUvPythonProject(dir) {
-		cmd := exec.Command("uv", "add", "--editable", coreSDK)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "`uv add --editable %s` in %s failed: %s", coreSDK, dir, string(out))
-		return
-	}
-
-	// Install the local development SDK
-	tc, err := toolchain.ResolveToolchain(toolchain.PythonOptions{
-		Root:       dir,
-		Virtualenv: "venv",
-		Toolchain:  toolchain.Pip,
-	})
-	require.NoError(t, err)
-
-	cmd, err = tc.ModuleCommand(t.Context(), "pip", "install", coreSDK)
-	require.NoError(t, err)
-	out, err = cmd.CombinedOutput()
-	require.NoError(t, err, "output: %s", out)
-}
-
-// isUvPythonProject reports whether the Pulumi project at dir declares `toolchain: uv`.
-func isUvPythonProject(dir string) bool {
-	pattern := regexp.MustCompile(`(?m)^\s+toolchain:\s*uv\s*$`)
-	for _, fname := range []string{"PulumiPlugin.yaml", "Pulumi.yaml"} {
-		data, err := os.ReadFile(filepath.Join(dir, fname))
-		if err == nil && pattern.Match(data) {
-			return true
-		}
-	}
-	return false
 }
 
 // Regression test for https://github.com/pulumi/pulumi/issues/18768
