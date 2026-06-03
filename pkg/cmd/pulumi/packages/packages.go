@@ -334,7 +334,7 @@ func NewPluginContext(cwd string) (*plugin.Context, error) {
 		Color: cmdutil.GetGlobalColorization(),
 	})
 	pluginCtx, err := plugin.NewContext(context.TODO(), sink, sink, nil, nil, cwd, nil, true, nil,
-		schema.NewLoaderServerFromHost)
+		schema.NewLoaderServerFromHost, pkgWorkspace.EnsureLanguageInstalled)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +478,7 @@ func providerFromSource(
 		}
 	}
 
-	f, spec, err := packageinstallation.InstallPlugin(pctx.Request(), packageSpec, nil, "", packageinstallation.Options{
+	f, spec, _, err := packageinstallation.InstallPlugin(pctx.Request(), packageSpec, nil, "", packageinstallation.Options{
 		Options: packageresolution.Options{
 			ResolveWithRegistry:                        !e.GetBool(env.DisableRegistryResolve),
 			ResolveVersionWithLocalWorkspace:           true,

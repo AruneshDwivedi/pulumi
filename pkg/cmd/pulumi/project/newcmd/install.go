@@ -67,13 +67,14 @@ func InstallPackagesFromProject(
 	ctx context.Context, proj workspace.BaseProject, root string, registry registry.Registry,
 	parallelism int, useLanguageVersionTools bool,
 	stdout, stderr io.Writer, e env.Env,
-) error {
+) (packageinstallation.State, error) {
 	d := diag.DefaultSink(stdout, stderr, diag.FormatOptions{
 		Color: utilCmdutil.GetGlobalColorization(),
 	})
-	pctx, err := plugin.NewContext(ctx, d, d, nil, nil, root, nil, false, nil, schema.NewLoaderServerFromHost)
+	pctx, err := plugin.NewContext(ctx, d, d, nil, nil, root, nil, false, nil,
+		schema.NewLoaderServerFromHost, pkgWorkspace.EnsureLanguageInstalled)
 	if err != nil {
-		return err
+		return packageinstallation.State{}, err
 	}
 	ws := packageworkspace.New(pluginstorage.Instance, pkgWorkspace.Instance, pctx.Host, stdout, stderr, nil,
 		packageworkspace.Options{
@@ -87,10 +88,10 @@ func InstallPackagesFromProject(
 		},
 		Concurrency: parallelism,
 	}
-	err = packageinstallation.InstallProjectPlugins(ctx, proj, root, opts, registry, ws)
+	continuation, err := packageinstallation.InstallProjectPlugins(ctx, proj, root, opts, registry, ws)
 	if e := (packageinstallation.ErrorCyclicDependencies{}); errors.As(err, &e) {
 		err = cmdDiag.FormatCyclicInstallError(ctx, e, root)
 	}
 
-	return errors.Join(err, pctx.Close())
+	return continuation, errors.Join(err, pctx.Close())
 }

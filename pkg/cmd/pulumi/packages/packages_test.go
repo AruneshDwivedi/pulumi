@@ -114,9 +114,9 @@ func (m mockInstallContext) InstallPluginAt(context.Context, string, *workspace.
 
 func (m mockInstallContext) GetRequiredPackages(
 	context.Context, string, *workspace.PluginProject,
-) ([]workspace.PackageDescriptor, error) {
+) ([]workspace.PackageDescriptor, []workspace.PackageSpec, error) {
 	m.t.Error("GetRequiredPackages should not be called for a binary plugin")
-	return nil, assert.AnError
+	return nil, nil, assert.AnError
 }
 
 func (m mockInstallContext) DownloadPlugin(
@@ -173,7 +173,7 @@ func TestProviderFromSource(t *testing.T) {
 		installCtx.t = t
 
 		pctx, err := plugin.NewContext(
-			t.Context(), nil, nil, nil, nil, t.TempDir(), nil, false, nil, schema.NewLoaderServerFromHost)
+			t.Context(), nil, nil, nil, nil, t.TempDir(), nil, false, nil, schema.NewLoaderServerFromHost, nil)
 		require.NoError(t, err)
 		defer func() { require.NoError(t, pctx.Close()) }()
 
