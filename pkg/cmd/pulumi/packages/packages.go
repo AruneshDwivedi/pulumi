@@ -70,7 +70,7 @@ func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.Ba
 	language, root, schemaSource string, parameters plugin.ParameterizeParameters,
 	registry registry.Registry, e env.Env, concurrency int,
 ) (*schema.Package, *workspace.PackageSpec, hcl.Diagnostics, error) {
-	pkgSpec, specOverride, parameterizationName, err := SchemaFromSchemaSource(
+	pkgSpec, specOverride, _, err := SchemaFromSchemaSource(
 		ws, pctx, schemaSource, parameters, registry, e, concurrency)
 	if err != nil {
 		var diagErr hcl.Diagnostics
@@ -83,11 +83,6 @@ func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.Ba
 	pkg, err := BindSpec(*pkgSpec)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to bind schema: %w", err)
-	}
-
-	// Rename to the extension identity.
-	if pkg.Parameterization != nil && pkg.Provider == nil && parameterizationName != "" {
-		pkg.Name = parameterizationName
 	}
 
 	tempOut, err := os.MkdirTemp("", "pulumi-package-")
@@ -434,6 +429,12 @@ func SchemaFromSchemaSource(
 	err = json.Unmarshal(schema.Schema, &spec)
 	if err != nil {
 		return nil, nil, "", err
+	}
+	if parameterizationName != "" && spec.Name != parameterizationName {
+		return nil, nil, "", fmt.Errorf(
+			"provider returned schema named %q but parameterize identified the package as %q; "+
+				"the provider must emit a schema whose name matches its parameterize response",
+			spec.Name, parameterizationName)
 	}
 	pluginSpec, err := workspace.NewPluginDescriptor(pctx.Request(), packageSource, apitype.ResourcePlugin, nil, "", nil)
 	if err != nil {
