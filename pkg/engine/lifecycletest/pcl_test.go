@@ -1191,3 +1191,56 @@ func TestPclSnippetReferenceFollowsAlias(t *testing.T) {
 	require.Equal(t, bURN, snap.Snippets[0].References["comp"],
 		"References should be rewritten from the aliased URN to the canonical (post-rename) URN")
 }
+
+// TestPclSnippetResourceOptionsProtect checks that a snippet can declare resource options. The
+// snippet body uses an `options { ... }` block to set `protect = true`; after the update the
+// synthesized resource should carry Protect = true in its state.
+//
+// Currently skipped: the snippet binder (pcl.BindResource) rejects all top-level blocks with
+// "unexpected block 'options'", and the snippet source's RegisterResource call does not yet
+// forward Protect/etc. Unskip once both pieces are wired up.
+func TestPclSnippetResourceOptionsProtect(t *testing.T) {
+	t.Parallel()
+	t.Skip("snippets do not yet support resource option blocks; see pcl.bindInputFile + snippet_source.go")
+
+	loaders := pclSnippetTestProvider(pclSnippetSchemaPropA, nil, nil, nil)
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			T:     t,
+			HostF: deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			Code: `propA = true
+options {
+    protect = true
+}`,
+		},
+	}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	// Find the snippet-synthesized resource and assert Protect was applied.
+	var snippetRes *resource.State
+	for _, r := range snap.Resources {
+		if r.Type == tokens.Type("pkgA:index:res") {
+			snippetRes = r
+			break
+		}
+	}
+	require.NotNil(t, snippetRes, "snippet-synthesized resource should exist")
+	require.True(t, snippetRes.Protect, "expected snippet to set Protect = true on the resource")
+}
