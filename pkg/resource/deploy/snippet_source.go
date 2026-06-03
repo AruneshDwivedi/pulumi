@@ -234,7 +234,6 @@ func (s *snippet) run(resourceMonitorTarget string) *promise.Promise[struct{}] {
 			resolved := make(map[string]resource.PropertyMap, len(refs))
 			var resolvedMu sync.Mutex
 			for name, ref := range refs {
-				name, ref := name, ref
 				grp.Go(func() error {
 					outs, err := s.broker.Get(ref.urn).Result(gctx)
 					if err != nil {

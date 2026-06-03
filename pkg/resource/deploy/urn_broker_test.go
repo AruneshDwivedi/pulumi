@@ -15,7 +15,6 @@
 package deploy
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -253,7 +252,7 @@ func TestURNBroker_ResolveDoesNotBlock(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-context.Background().Done():
+	case <-t.Context().Done():
 		t.Fatal("Resolve should not block")
 	}
 

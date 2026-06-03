@@ -857,7 +857,7 @@ func TestURNBrokerResolveOnRegisterResource(t *testing.T) {
 	steps := []RegisterResourceEvent{
 		// A single custom resource whose outputs we control via the iter-side reg.Done call below.
 		&testRegEvent{
-			goal: resource.NewGoal{
+			goal: resource.NewGoal{ //nolint:requiredfield
 				Type:               "pkgA:index:res",
 				Name:               "res1",
 				Custom:             true,
@@ -907,7 +907,7 @@ func TestURNBrokerResolveOnRegisterResource(t *testing.T) {
 		goal := reg.Goal()
 		urn := resource.NewURN(runInfo.Target.Name.Q(), runInfo.Proj.Name, "", goal.Type, goal.Name)
 		reg.Done(&RegisterResult{
-			State: resource.NewState{
+			State: resource.NewState{ //nolint:requiredfield
 				Type:               goal.Type,
 				URN:                urn,
 				Custom:             goal.Custom,
@@ -944,7 +944,7 @@ func TestURNBrokerNotResolvedForLocalComponentOnRegister(t *testing.T) {
 	steps := []RegisterResourceEvent{
 		// A local component resource — Custom=false, Remote=false.
 		&testRegEvent{
-			goal: resource.NewGoal{
+			goal: resource.NewGoal{ //nolint:requiredfield
 				Type:               "pkgA:index:Comp",
 				Name:               "comp",
 				Custom:             false,
@@ -983,7 +983,7 @@ func TestURNBrokerNotResolvedForLocalComponentOnRegister(t *testing.T) {
 		goal := reg.Goal()
 		urn := resource.NewURN(runInfo.Target.Name.Q(), runInfo.Proj.Name, "", goal.Type, goal.Name)
 		reg.Done(&RegisterResult{
-			State: resource.NewState{
+			State: resource.NewState{ //nolint:requiredfield
 				Type:               goal.Type,
 				URN:                urn,
 				Custom:             goal.Custom,
