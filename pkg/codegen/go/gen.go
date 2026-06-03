@@ -5386,7 +5386,7 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 			Name: %q,
 			Version: %q,
 			DownloadUrl: %q,
-			Parameterization: &pulumirpc.Parameterization{
+			%s: &pulumirpc.Parameterization{
 				Name: %q,
 				Version: %q,
 				Value: parameter,
@@ -5399,10 +5399,15 @@ func PkgGetPackageRef(ctx *pulumi.Context) (string, error) {
 		param := p.Parameterization
 		value := base64.StdEncoding.EncodeToString(param.Parameter)
 		key := fmt.Sprintf("%s:%s", p.Name, p.Version.String())
+		field := "Parameterization"
+		if p.Provider == nil {
+			field = "Extension"
+		}
 		_, err = fmt.Fprintf(w, packageRefTemplate,
 			key,
 			value,
 			param.BaseProvider.Name, param.BaseProvider.Version.String(), p.PluginDownloadURL,
+			field,
 			p.Name, p.Version.String(),
 		)
 		if err != nil {

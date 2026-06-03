@@ -292,7 +292,7 @@ func (p packageDefResources) Range() ResourcesIter {
 }
 
 func (p packageDefResources) Get(token string) (*Resource, bool, error) {
-	if token == p.Provider.Token {
+	if p.Provider != nil && token == p.Provider.Token {
 		return p.Provider, true, nil
 	}
 

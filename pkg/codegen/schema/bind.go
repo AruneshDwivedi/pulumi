@@ -413,10 +413,15 @@ func (s packageSpecSource) GetFunctionSpec(token string) (FunctionSpec, bool, er
 
 func (s packageSpecSource) GetResourceSpec(token string) (ResourceSpec, bool, error) {
 	if token == "pulumi:providers:"+s.spec.Name {
-		if s.spec.Provider == nil {
+		if s.spec.Provider != nil {
+			return *s.spec.Provider, true, nil
+		}
+		// Extension parameterization deliberately omits Provider.
+		if s.spec.Parameterization != nil {
 			return ResourceSpec{}, false, nil
 		}
-		return *s.spec.Provider, true, nil
+		// Non-extension schemas without an explicit Provider get a default.
+		return ResourceSpec{}, true, nil
 	}
 	spec, ok := s.spec.Resources[token]
 	return spec, ok, nil
