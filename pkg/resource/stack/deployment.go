@@ -285,11 +285,19 @@ func SerializeDeploymentWithMetadata(
 
 // SerializeSnippet converts a resource.Snippet into its apitype representation.
 func SerializeSnippet(s resource.Snippet) apitype.SnippetV1 {
+	var refs map[string]string
+	if len(s.References) > 0 {
+		refs = make(map[string]string, len(s.References))
+		for k, v := range s.References {
+			refs[k] = v
+		}
+	}
 	return apitype.SnippetV1{
 		Name:       s.Name,
 		Type:       s.Type,
 		Code:       s.Code,
 		Descriptor: serializePackageDescriptor(s.Descriptor),
+		References: refs,
 	}
 }
 
@@ -311,11 +319,19 @@ func serializePackageDescriptor(d resource.PackageDescriptor) apitype.PackageDes
 
 // DeserializeSnippet converts an apitype.SnippetV1 back into a resource.Snippet.
 func DeserializeSnippet(s apitype.SnippetV1) resource.Snippet {
+	var refs map[string]string
+	if len(s.References) > 0 {
+		refs = make(map[string]string, len(s.References))
+		for k, v := range s.References {
+			refs[k] = v
+		}
+	}
 	return resource.Snippet{
 		Name:       s.Name,
 		Type:       s.Type,
 		Code:       s.Code,
 		Descriptor: deserializePackageDescriptor(s.Descriptor),
+		References: refs,
 	}
 }
 

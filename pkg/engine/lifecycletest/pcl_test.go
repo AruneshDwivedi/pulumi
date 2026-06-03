@@ -1039,3 +1039,155 @@ func TestPclSnippetMissingSnippetReference(t *testing.T) {
 		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
 	require.ErrorContains(t, err, "no source registered this URN")
 }
+
+// TestPclSnippetReferenceFollowsAlias exercises the alias-renamed-producer flow. A snippet declares a
+// reference to a URN that the program registers under name "A". On a subsequent update the program
+// registers the resource as "B" with `AliasURNs: ["...::A"]`, signalling that B is the renamed-A; the
+// snippet should still resolve its reference (the broker should treat the alias as equivalent to the
+// canonical URN) and the saved snippet's References should be rewritten to point at B.
+//
+// This test is forward-looking — it captures the intended behaviour. Two pieces are still missing:
+//
+//  1. Broker-side alias resolution: when the resmon processes a RegisterResource with aliases, it
+//     should call broker.Resolve(aliasURN, outputs) for each alias so any consumer blocked on the
+//     pre-rename URN wakes up.
+//  2. Snippet rewriting at snapshot-write time: after the engine has resolved aliases, the saved
+//     snippet's References map should be updated to use the new URN (similar in spirit to
+//     NormalizeURNReferences for resource URNs).
+func TestPclSnippetReferenceFollowsAlias(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "message": { "type": "string" }
+      },
+      "requiredInputs": ["message"]
+    },
+    "pkgA:index:Producer": {
+      "inputProperties": {
+        "value": { "type": "string" }
+      },
+      "requiredInputs": ["value"],
+      "properties": {
+        "value": { "type": "string" }
+      },
+      "required": ["value"]
+    }
+  }
+}`
+
+	// registerAsB toggles which name the program uses for the producer between the two updates.
+	var registerAsB atomic.Bool
+
+	const (
+		aURN = "urn:pulumi:test::test::pkgA:index:Producer::A"
+		bURN = "urn:pulumi:test::test::pkgA:index:Producer::B"
+	)
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+				DiffF: func(_ context.Context, req plugin.DiffRequest) (plugin.DiffResult, error) {
+					if !req.OldInputs.DeepEquals(req.NewInputs) {
+						return plugin.DiffResult{Changes: plugin.DiffSome}, nil
+					}
+					return plugin.DiffResult{}, nil
+				},
+				UpdateF: func(_ context.Context, req plugin.UpdateRequest) (plugin.UpdateResponse, error) {
+					return plugin.UpdateResponse{Properties: req.NewInputs, Status: resource.StatusOK}, nil
+				},
+			}, nil
+		}),
+	}
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		name := "A"
+		var aliases []resource.URN
+		if registerAsB.Load() {
+			name = "B"
+			aliases = []resource.URN{aURN}
+		}
+		_, err := monitor.RegisterResource("pkgA:index:Producer", name, true, deploytest.ResourceOptions{
+			AliasURNs: aliases,
+			Inputs:    resource.PropertyMap{"value": resource.NewProperty("hello")},
+		})
+		return err
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "consumer", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			References: map[string]string{"comp": aURN},
+			Code:       `message = comp.value`,
+		},
+	}
+
+	// First update: program registers the component as A; snippet resolves comp.value to "hello".
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	var consumer *resource.State
+	for _, r := range snap.Resources {
+		if r.URN.Name() == "consumer" {
+			consumer = r
+			break
+		}
+	}
+	require.NotNil(t, consumer, "consumer snippet resource should have been created on the first run")
+	require.Equal(t, resource.PropertyMap{"message": resource.NewProperty("hello")}, consumer.Inputs)
+	require.Equal(t, aURN, snap.Snippets[0].References["comp"], "References should still point at A before the rename")
+
+	// Second update: program renames A → B (via alias). The snippet still has References["comp"] = aURN.
+	// The broker should treat the alias as equivalent so the snippet resolves; the saved snippet should be
+	// rewritten to reference B.
+	registerAsB.Store(true)
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.NoError(t, err)
+
+	consumer = nil
+	for _, r := range snap.Resources {
+		if r.URN.Name() == "consumer" {
+			consumer = r
+			break
+		}
+	}
+	require.NotNil(t, consumer, "consumer should survive the producer being aliased to a new name")
+	require.Equal(t, resource.PropertyMap{"message": resource.NewProperty("hello")}, consumer.Inputs)
+
+	require.Len(t, snap.Snippets, 1)
+	require.Equal(t, bURN, snap.Snippets[0].References["comp"],
+		"References should be rewritten from the aliased URN to the canonical (post-rename) URN")
+}

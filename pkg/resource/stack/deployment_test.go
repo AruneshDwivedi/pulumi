@@ -412,6 +412,9 @@ func TestSnippetRoundTrip(t *testing.T) {
 					},
 				},
 				Code: `propB = "x"`,
+				References: map[string]string{
+					"comp": "urn:pulumi:dev::proj::pkgA:index:Comp::comp",
+				},
 			},
 		},
 	}

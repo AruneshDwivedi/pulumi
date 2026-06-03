@@ -2755,8 +2755,19 @@ func (rm *resmon) RegisterResource(ctx context.Context,
 
 	// Publish the registered outputs on the URN broker so other concurrent sources waiting on this URN can wake up.
 	// For local components the outputs aren't final yet — they'll be published by RegisterResourceOutputs below.
+	// Aliases are published too so consumers blocked on a pre-rename URN find the resource via its new canonical
+	// URN; the snippet's References map is rewritten to the canonical URN at snapshot-write time by
+	// NormalizeURNReferences.
 	if rm.urnBroker != nil && result.State.URN != "" && (custom || remote) {
 		rm.urnBroker.Resolve(result.State.URN, outputs)
+		// Publish under each alias too, so consumers blocked on a pre-rename URN find the resource via its new
+		// canonical URN. We use parsedAliases (the request's aliases) rather than result.State.Aliases because
+		// the Construct path only fills in URN+Outputs on the result, leaving Aliases empty.
+		for _, alias := range parsedAliases {
+			if aliasURN := alias.GetURN(); aliasURN != "" && aliasURN != result.State.URN {
+				rm.urnBroker.Resolve(aliasURN, outputs)
+			}
+		}
 	}
 
 	// TODO(@platform):
