@@ -153,7 +153,9 @@ func (pc *packageCommand) newFunctionCommand(fn *schema.Function) *cobra.Command
 	cmd.Flags().StringVar(&pc.format, "input", "pcl",
 		"Format of the configuration files")
 
-	addInputFlags(cmd, pc.spec.Name, pc.spec.Provider.InputProperties)
+	if pc.spec.Provider != nil {
+		addInputFlags(cmd, pc.spec.Name, pc.spec.Provider.InputProperties)
+	}
 	if fn.Inputs != nil {
 		addInputFlags(cmd, "input", fn.Inputs.Properties)
 	}

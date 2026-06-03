@@ -1378,7 +1378,7 @@ func TestDoCmdFunctionInvokeWithConfiguration(t *testing.T) {
 		assert.Equal(t, "azure", source)
 		spec := schema.PackageSpec{
 			Name: "azure",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"opt1": {
 						TypeSpec: schema.TypeSpec{
@@ -2117,7 +2117,7 @@ func TestDoCmdFunctionInvokeWithYAMLProviderFile(t *testing.T) {
 		assert.Equal(t, "azure", source)
 		spec := schema.PackageSpec{
 			Name: "azure",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"opt1": {TypeSpec: schema.TypeSpec{Type: "string"}},
 				},
@@ -2425,7 +2425,7 @@ func TestDoCmdFunctionInvokeWithFlags(t *testing.T) {
 		assert.Equal(t, "azure", source)
 		spec := schema.PackageSpec{
 			Name: "azure",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"opt1":   {TypeSpec: schema.TypeSpec{Type: "string"}},
 					"optTwo": {TypeSpec: schema.TypeSpec{Type: "string"}},
@@ -2557,7 +2557,7 @@ func TestDoCmdFunctionInvokeWithYAMLFlags(t *testing.T) {
 		assert.Equal(t, "azure", source)
 		spec := schema.PackageSpec{
 			Name: "azure",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"opt1":   {TypeSpec: schema.TypeSpec{Type: "string"}},
 					"optTwo": {TypeSpec: schema.TypeSpec{Type: "string"}},

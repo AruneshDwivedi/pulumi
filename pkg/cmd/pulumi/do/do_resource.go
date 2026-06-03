@@ -104,7 +104,9 @@ func (pc *packageCommand) newResourceCommand(res *schema.Resource) *cobra.Comman
 		"Path to a file containing provider configuration")
 	cmd.PersistentFlags().StringVar(&pc.format, "input", "pcl",
 		"Format of the provider configuration file")
-	addPersistentInputFlags(cmd, pc.spec.Name, pc.spec.Provider.InputProperties)
+	if pc.spec.Provider != nil {
+		addPersistentInputFlags(cmd, pc.spec.Name, pc.spec.Provider.InputProperties)
+	}
 	cmd.AddCommand(pc.newResourceCreateCommand(res))
 	cmd.AddCommand(pc.newResourceReadCommand(res))
 	cmd.AddCommand(pc.newResourcePatchCommand(res))

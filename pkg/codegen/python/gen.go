@@ -551,15 +551,15 @@ def get_version():
 		return nil, err
 	}
 
-	if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+	if pkg.Parameterization != nil {
 		// If a parameterized package is being generated then we _need_ to use package references.
 		// A replacement schema fills the RegisterPackageRequest.parameterization field; an
 		// extension fills the RegisterPackageRequest.extension field instead. Schemas carry
 		// either one or the other, never both.
 		var p *schema.Parameterization
 		registerField := "parameterization"
-		if pkg.ExtensionParameterization != nil {
-			p = pkg.ExtensionParameterization
+		if pkg.Parameterization != nil && pkg.Provider == nil {
+			p = pkg.Parameterization
 			registerField = "extension"
 		} else {
 			p = pkg.Parameterization
@@ -1631,7 +1631,7 @@ func (mod *modContext) genResource(res *schema.Resource) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+	if pkg.Parameterization != nil {
 		fmt.Fprintf(w, ",\n            package_ref=_utilities.get_package()")
 	}
 	fmt.Fprintf(w, ")\n\n")
@@ -1892,7 +1892,7 @@ func (mod *modContext) genMethods(w io.Writer, res *schema.Resource) {
 		// If the call is on a parameterized package, make sure we pass the parameter.
 		pkg, err := fun.PackageReference.Definition()
 		contract.AssertNoErrorf(err, "can not load package definition for %s: %s", pkg.Name, err)
-		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		if pkg.Parameterization != nil {
 			trailingArgs += ", package_ref=_utilities.get_package()"
 		}
 
@@ -2025,7 +2025,7 @@ func (mod *modContext) genFunction(fun *schema.Function) (string, error) {
 		if err != nil {
 			return err
 		}
-		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		if pkg.Parameterization != nil {
 			trailingArgs += ", package_ref=_utilities.get_package()"
 		}
 
@@ -2304,22 +2304,11 @@ func genPulumiPluginFile(pkg *schema.Package) ([]byte, error) {
 	}
 	// For both replacement and extension parameterization the plugin name/version
 	// in pulumi-plugin.json is from the base provider, not the top-level package.
-	// The PulumiParameterizationJSON serialization keeps a "kind" discriminator so
-	// downstream readers can recover which flavor was generated.
 	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
 			Name:    pulumiPlugin.Name,
 			Version: pulumiPlugin.Version,
 			Value:   param.Parameter,
-		}
-		pulumiPlugin.Name = param.BaseProvider.Name
-		pulumiPlugin.Version = param.BaseProvider.Version.String()
-	} else if param := pkg.ExtensionParameterization; param != nil {
-		pulumiPlugin.Parameterization = &plugin.PulumiParameterizationJSON{
-			Name:    pulumiPlugin.Name,
-			Version: pulumiPlugin.Version,
-			Value:   param.Parameter,
-			Kind:    "extension",
 		}
 		pulumiPlugin.Name = param.BaseProvider.Name
 		pulumiPlugin.Version = param.BaseProvider.Version.String()
@@ -2417,7 +2406,7 @@ func genPackageMetadata(
 	// Collect the deps into a tuple, where the first
 	// element is the dep name and the second element
 	// is the version constraint.
-	deps, err := calculateDeps(pkg.Parameterization != nil || pkg.ExtensionParameterization != nil, requires)
+	deps, err := calculateDeps(pkg.Parameterization != nil, requires)
 	if err != nil {
 		return "", err
 	}
@@ -3151,7 +3140,7 @@ func generateModuleContextMap(tool string, pkg *schema.Package, info PackageInfo
 
 	// Extension-parameterized packages don't get their own Provider class — they
 	// reuse the base provider their extension was applied to.
-	isExtension := pkg.ExtensionParameterization != nil
+	isExtension := pkg.Parameterization != nil && pkg.Provider == nil
 	if !isExtension && pkg.Provider != nil {
 		scanResource(pkg.Provider)
 	}
@@ -3515,7 +3504,7 @@ func setPythonRequires(schema *PyprojectSchema, pkg *schema.Package) {
 // setDependencies mutates the pyproject schema adding the dependencies to the
 // list in lexical order.
 func setDependencies(schema *PyprojectSchema, pkg *schema.Package, dependencies map[string]string) error {
-	deps, err := calculateDeps(pkg.Parameterization != nil || pkg.ExtensionParameterization != nil, dependencies)
+	deps, err := calculateDeps(pkg.Parameterization != nil, dependencies)
 	if err != nil {
 		return err
 	}

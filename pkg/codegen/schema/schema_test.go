@@ -2477,7 +2477,7 @@ func TestProviderReservedKeywordsIsAnError(t *testing.T) {
 	pkgSpec = PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			InputProperties: map[string]PropertySpec{
 				"pulumi": {
 					TypeSpec: TypeSpec{
@@ -2498,7 +2498,7 @@ func TestProviderReservedKeywordsIsAnError(t *testing.T) {
 	pkgSpec = PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			InputProperties: map[string]PropertySpec{
 				"version": {
 					TypeSpec: TypeSpec{
@@ -2520,7 +2520,7 @@ func TestProviderReservedKeywordsIsAnError(t *testing.T) {
 	pkgSpec = PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			ObjectTypeSpec: ObjectTypeSpec{
 				Properties: map[string]PropertySpec{
 					"pulumi": {
@@ -2544,7 +2544,7 @@ func TestProviderReservedKeywordsIsAnError(t *testing.T) {
 	pkgSpec = PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			ObjectTypeSpec: ObjectTypeSpec{
 				Properties: map[string]PropertySpec{
 					"version": {
@@ -2573,7 +2573,7 @@ func TestResourceWithKeynameOverlapFunction(t *testing.T) {
 	pkgSpec := PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			ObjectTypeSpec: ObjectTypeSpec{},
 		},
 		Functions: map[string]FunctionSpec{
@@ -2594,7 +2594,7 @@ func TestResourceWithKeynameOverlapResource(t *testing.T) {
 	pkgSpec := PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			ObjectTypeSpec: ObjectTypeSpec{},
 		},
 		Resources: map[string]ResourceSpec{
@@ -2615,7 +2615,7 @@ func TestResourceWithKeynameOverlapType(t *testing.T) {
 	pkgSpec := PackageSpec{
 		Name:    "xyz",
 		Version: "0.0.1",
-		Provider: ResourceSpec{
+		Provider: &ResourceSpec{
 			ObjectTypeSpec: ObjectTypeSpec{},
 		},
 		Types: map[string]ComplexTypeSpec{
@@ -2833,7 +2833,8 @@ func TestProviderRefWarning(t *testing.T) {
 	t.Parallel()
 
 	spec := PackageSpec{
-		Name: "test",
+		Name:     "test",
+		Provider: &ResourceSpec{ObjectTypeSpec: ObjectTypeSpec{Type: "object"}},
 		Resources: map[string]ResourceSpec{
 			"test:index:SomeResource": {
 				InputProperties: map[string]PropertySpec{
@@ -2885,28 +2886,6 @@ func TestBindParameterizedExternals(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, diags)
-}
-
-func TestBindRejectsBothParameterizations(t *testing.T) {
-	t.Parallel()
-
-	spec := PackageSpec{
-		Name:     "demo",
-		Version:  "1.0.0",
-		Provider: ResourceSpec{ObjectTypeSpec: ObjectTypeSpec{Type: "object"}},
-		Parameterization: &ParameterizationSpec{
-			BaseProvider: BaseProviderSpec{Name: "base", Version: "1.0.0"},
-			Parameter:    []byte("a"),
-		},
-		ExtensionParameterization: &ParameterizationSpec{
-			BaseProvider: BaseProviderSpec{Name: "base", Version: "1.0.0"},
-			Parameter:    []byte("b"),
-		},
-	}
-	_, diags, err := BindSpec(spec, nil, ValidationOptions{})
-	require.NoError(t, err)
-	require.True(t, diags.HasErrors(), "expected diagnostics; got: %v", diags)
-	require.Contains(t, diags.Error(), "extensionParameterization")
 }
 
 func TestTokenToModuleIndexPrefix(t *testing.T) {

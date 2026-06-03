@@ -121,7 +121,9 @@ func getDocsForPackage(pkg *Package) []doc {
 	for _, f := range pkg.Functions {
 		allDocs = append(allDocs, getDocsForFunction(f)...)
 	}
-	allDocs = append(allDocs, getDocsForResource(pkg.Provider, true)...)
+	if pkg.Provider != nil {
+		allDocs = append(allDocs, getDocsForResource(pkg.Provider, true)...)
+	}
 	for _, r := range pkg.Resources {
 		allDocs = append(allDocs, getDocsForResource(r, false)...)
 	}

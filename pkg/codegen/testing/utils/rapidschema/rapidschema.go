@@ -148,22 +148,26 @@ func drawPackageSpec(t *rapid.T) schema.PackageSpec {
 	}
 
 	spec := schema.PackageSpec{
-		Name:    name,
-		Version: Version().Draw(t, "version").String(),
-		// Provider is required by the binder; an empty object satisfies it
-		// without contributing any properties.
-		Provider:  schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}},
+		Name:      name,
+		Version:   Version().Draw(t, "version").String(),
 		Types:     ctx.typeDefs,
 		Resources: resources,
 	}
 
+	// Three shapes:
+	//   0: no parameterization, Provider present (plain package)
+	//   1: replacement parameterization (Parameterization + Provider)
+	//   2: extension parameterization (Parameterization only, Provider nil)
 	switch rapid.IntRange(0, 2).Draw(t, "parameterization") {
+	case 0:
+		spec.Provider = &schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
 	case 1:
 		p := drawParameterizationSpec(t, "parameterization")
 		spec.Parameterization = &p
+		spec.Provider = &schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
 	case 2:
-		p := drawParameterizationSpec(t, "extensionParameterization")
-		spec.ExtensionParameterization = &p
+		p := drawParameterizationSpec(t, "parameterization")
+		spec.Parameterization = &p
 	}
 
 	return spec

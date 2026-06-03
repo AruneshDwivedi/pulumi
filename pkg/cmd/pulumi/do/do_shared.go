@@ -592,6 +592,11 @@ func resourceURN(res *schema.Resource) resource.URN {
 }
 
 func (pc *packageCommand) configureProvider(cmd *cobra.Command, ctx context.Context) error {
+	// Extension-parameterized packages don't carry their own Provider; the base
+	// plugin's existing configuration applies. Nothing to evaluate here.
+	if pc.spec.Provider == nil {
+		return nil
+	}
 	config, err := evaluateResourceFile(
 		ctx, pc.providerFile, "provider", pc.format,
 		pc.spec.Provider, pc.evalContext, pc.converter, pc.loaderTarget, pc.packageDescriptor,

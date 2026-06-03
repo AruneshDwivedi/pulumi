@@ -905,12 +905,12 @@ func (mod *modContext) genResource(w io.Writer, r *schema.Resource) (resourceFil
 		fmt.Fprintf(w, "        super(%s.__pulumiType, name, resourceInputs, opts, true /*remote*/", name)
 	} else {
 		fmt.Fprintf(w, "        super(%s.__pulumiType, name, resourceInputs, opts", name)
-		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		if pkg.Parameterization != nil {
 			fmt.Fprintf(w, ", false /*dependency*/")
 		}
 	}
 
-	if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+	if pkg.Parameterization != nil {
 		fmt.Fprintf(w, ", utilities.getPackage()")
 	}
 
@@ -1031,7 +1031,7 @@ func (mod *modContext) genResource(w io.Writer, r *schema.Resource) (resourceFil
 		// If the call is on a parameterized package, make sure we pass the parameter.
 		pkg, err := fun.PackageReference.Definition()
 		contract.AssertNoErrorf(err, "can not load package definition for %s: %s", pkg.Name, err)
-		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		if pkg.Parameterization != nil {
 			fmt.Fprintf(w, ", utilities.getPackage()")
 		}
 
@@ -1295,7 +1295,7 @@ func (mod *modContext) genFunctionDefinition(w io.Writer, fun *schema.Function, 
 		if err != nil {
 			return info, err
 		}
-		if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		if pkg.Parameterization != nil {
 			fmt.Fprintf(w, ", utilities.getPackage()")
 		}
 
@@ -2468,9 +2468,7 @@ func genNPMPackageMetadata(
 	}
 
 	var pulumiPlugin plugin.PulumiPluginJSON
-	switch {
-	case pkg.Parameterization != nil:
-		param := pkg.Parameterization
+	if param := pkg.Parameterization; param != nil {
 		pulumiPlugin = plugin.PulumiPluginJSON{
 			Resource: true,
 			Server:   pkg.PluginDownloadURL,
@@ -2482,21 +2480,7 @@ func genNPMPackageMetadata(
 				Value:   param.Parameter,
 			},
 		}
-	case pkg.ExtensionParameterization != nil:
-		param := pkg.ExtensionParameterization
-		pulumiPlugin = plugin.PulumiPluginJSON{
-			Resource: true,
-			Server:   pkg.PluginDownloadURL,
-			Name:     param.BaseProvider.Name,
-			Version:  param.BaseProvider.Version.String(),
-			Parameterization: &plugin.PulumiParameterizationJSON{
-				Name:    pkg.Name,
-				Version: pkg.Version.String(),
-				Value:   param.Parameter,
-				Kind:    "extension",
-			},
-		}
-	default:
+	} else {
 		pulumiPlugin = plugin.PulumiPluginJSON{
 			Resource: true,
 			Server:   pkg.PluginDownloadURL,
@@ -2587,7 +2571,7 @@ func genNPMPackageMetadata(
 		}
 		if path, ok := localDependencies["pulumi"]; ok {
 			npminfo.Dependencies[sdkPack] = path
-		} else if pkg.Parameterization != nil || pkg.ExtensionParameterization != nil {
+		} else if pkg.Parameterization != nil {
 			npminfo.Dependencies[sdkPack] = MinimumValidParameterizationSDKVersion
 		} else {
 			npminfo.Dependencies[sdkPack] = MinimumValidSDKVersion
@@ -2769,7 +2753,7 @@ func generateModuleContextMap(tool string, pkg *schema.Package, extraFiles map[s
 
 	// Extension-parameterized packages don't get their own Provider class — they
 	// reuse the base provider their extension was applied to.
-	isExtension := pkg.ExtensionParameterization != nil
+	isExtension := pkg.Parameterization != nil && pkg.Provider == nil
 	if !isExtension && pkg.Provider != nil {
 		scanResource(pkg.Provider)
 	}
@@ -2966,15 +2950,15 @@ func (mod *modContext) genUtilitiesFile(w io.Writer) error {
 		return err
 	}
 
-	if def.Parameterization != nil || def.ExtensionParameterization != nil {
+	if def.Parameterization != nil {
 		// A schema carries either a replacement parameterization or an extension,
 		// never both. Pick whichever is set and emit the matching getPackage() call:
 		// the TS runtime takes an `extension: true` flag to forward to the engine
 		// via the new RegisterPackageRequest.extension field.
 		param := def.Parameterization
-		isExtension := def.ExtensionParameterization != nil
+		isExtension := def.Parameterization != nil && def.Provider == nil
 		if isExtension {
-			param = def.ExtensionParameterization
+			param = def.Parameterization
 		}
 		base64Parameter := base64.StdEncoding.EncodeToString(param.Parameter)
 

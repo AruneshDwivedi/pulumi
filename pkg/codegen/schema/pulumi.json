@@ -193,15 +193,6 @@
                 }
             ]
         },
-        "extensionParameterization": {
-            "description": "An optional object to define extension parameterization for the package. Mutually exclusive with parameterization.",
-            "type": "object",
-            "allOf": [
-                {
-                    "$ref": "#/$defs/parameterization"
-                }
-            ]
-        },
         "allowedPackageNames": {
             "description": "A list of allowed package names in addition to the name property.",
             "type": "array",

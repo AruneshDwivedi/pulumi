@@ -661,16 +661,10 @@ type Package struct {
 	// Dependencies specifies the dependencies of the package
 	Dependencies []PackageDescriptor
 
-	// Parameterization is the optional replacement parameterization for the package, if any.
-	// A replacement parameterization supplants the base plugin's identity, producing a
-	// distinct package backed by that plugin.
+	// Parameterization is the optional parameterization for the package, if any.
+	// Replacement parameterizations carry a Provider; extension parameterizations
+	// leave Provider nil and extend the base plugin in place.
 	Parameterization *Parameterization
-
-	// ExtensionParameterization is the optional extension parameterization for the package, if any.
-	// An extension parameterization extends the base plugin in place, adding resources alongside
-	// the base provider's own. Codegen reads which field is populated to determine the parameterization
-	// flavor; the two are mutually exclusive.
-	ExtensionParameterization *Parameterization
 
 	resourceTable     map[string]*Resource
 	resourceTypeTable map[string]*ResourceType
@@ -1113,34 +1107,23 @@ func (pkg *Package) Reference() PackageReference {
 func (pkg *Package) Descriptor(ctx context.Context) (workspace.PackageDescriptor, error) {
 	version := pkg.Version
 	name := pkg.Name
-	switch {
-	case pkg.Parameterization != nil:
+	if pkg.Parameterization != nil {
 		version = &pkg.Parameterization.BaseProvider.Version
 		name = pkg.Parameterization.BaseProvider.Name
-	case pkg.ExtensionParameterization != nil:
-		version = &pkg.ExtensionParameterization.BaseProvider.Version
-		name = pkg.ExtensionParameterization.BaseProvider.Name
 	}
 	pluginSpec, err := workspace.NewPluginDescriptor(ctx, name, apitype.ResourcePlugin, version,
 		pkg.PluginDownloadURL, nil)
 	if err != nil {
 		return workspace.PackageDescriptor{}, err
 	}
-	switch {
-	case pkg.Parameterization != nil:
-		return workspace.NewPackageDescriptor(pluginSpec, &workspace.Parameterization{
-			Name:    pkg.Name,
-			Version: *pkg.Version,
-			Value:   pkg.Parameterization.Parameter,
-		}), nil
-	case pkg.ExtensionParameterization != nil:
-		return workspace.NewExtensionPackageDescriptor(pluginSpec, &workspace.Parameterization{
-			Name:    pkg.Name,
-			Version: *pkg.Version,
-			Value:   pkg.ExtensionParameterization.Parameter,
-		}), nil
+	if pkg.Parameterization == nil {
+		return workspace.NewPackageDescriptor(pluginSpec, nil), nil
 	}
-	return workspace.NewPackageDescriptor(pluginSpec, nil), nil
+	return workspace.NewPackageDescriptor(pluginSpec, &workspace.Parameterization{
+		Name:    pkg.Name,
+		Version: *pkg.Version,
+		Value:   pkg.Parameterization.Parameter,
+	}), nil
 }
 
 func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
@@ -1152,7 +1135,7 @@ func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
 	var metadata *MetadataSpec
 	// Don't set support pack in meta spec if Parameterization is present because that
 	// implictly sets SupportPack when reading back in anyway.
-	supportPack := pkg.SupportPack && pkg.Parameterization == nil && pkg.ExtensionParameterization == nil
+	supportPack := pkg.SupportPack && pkg.Parameterization == nil
 	if pkg.moduleFormat != nil || supportPack {
 		metadata = &MetadataSpec{SupportPack: supportPack}
 		if pkg.moduleFormat != nil {
@@ -1171,39 +1154,27 @@ func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
 		}
 	}
 
-	var extensionParameterization *ParameterizationSpec
-	if pkg.ExtensionParameterization != nil {
-		extensionParameterization = &ParameterizationSpec{
-			BaseProvider: BaseProviderSpec{
-				Name:    pkg.ExtensionParameterization.BaseProvider.Name,
-				Version: pkg.ExtensionParameterization.BaseProvider.Version.String(),
-			},
-			Parameter: pkg.ExtensionParameterization.Parameter,
-		}
-	}
-
 	spec = &PackageSpec{
-		Name:                      pkg.Name,
-		Version:                   version,
-		DisplayName:               pkg.DisplayName,
-		Publisher:                 pkg.Publisher,
-		Namespace:                 pkg.Namespace,
-		Description:               pkg.Description,
-		Keywords:                  pkg.Keywords,
-		Homepage:                  pkg.Homepage,
-		License:                   pkg.License,
-		Attribution:               pkg.Attribution,
-		Repository:                pkg.Repository,
-		LogoURL:                   pkg.LogoURL,
-		PluginDownloadURL:         pkg.PluginDownloadURL,
-		Meta:                      metadata,
-		Dependencies:              pkg.Dependencies,
-		Types:                     map[string]ComplexTypeSpec{},
-		Resources:                 map[string]ResourceSpec{},
-		Functions:                 map[string]FunctionSpec{},
-		AllowedPackageNames:       pkg.AllowedPackageNames,
-		Parameterization:          parameterization,
-		ExtensionParameterization: extensionParameterization,
+		Name:                pkg.Name,
+		Version:             version,
+		DisplayName:         pkg.DisplayName,
+		Publisher:           pkg.Publisher,
+		Namespace:           pkg.Namespace,
+		Description:         pkg.Description,
+		Keywords:            pkg.Keywords,
+		Homepage:            pkg.Homepage,
+		License:             pkg.License,
+		Attribution:         pkg.Attribution,
+		Repository:          pkg.Repository,
+		LogoURL:             pkg.LogoURL,
+		PluginDownloadURL:   pkg.PluginDownloadURL,
+		Meta:                metadata,
+		Dependencies:        pkg.Dependencies,
+		Types:               map[string]ComplexTypeSpec{},
+		Resources:           map[string]ResourceSpec{},
+		Functions:           map[string]FunctionSpec{},
+		AllowedPackageNames: pkg.AllowedPackageNames,
+		Parameterization:    parameterization,
 	}
 
 	lang, err := marshalLanguage(pkg.Language)
@@ -1217,9 +1188,12 @@ func (pkg *Package) MarshalSpec() (spec *PackageSpec, err error) {
 		return nil, fmt.Errorf("marshaling package config: %w", err)
 	}
 
-	spec.Provider, err = pkg.marshalResource(pkg.Provider)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling provider: %w", err)
+	if pkg.Provider != nil {
+		providerSpec, err := pkg.marshalResource(pkg.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling provider: %w", err)
+		}
+		spec.Provider = &providerSpec
 	}
 
 	for _, t := range pkg.Types {
@@ -2289,12 +2263,6 @@ type PackageInfoSpec struct {
 
 	// Parameterization is the optional parameterization for this package.
 	Parameterization *ParameterizationSpec `json:"parameterization,omitempty" yaml:"parameterization,omitempty"`
-
-	// ExtensionParameterization is the optional extension parameterization for this package.
-	// An extension parameterization extends the base plugin in place rather than replacing it;
-	// the presence of this field (vs Parameterization) signals the extension flavor without
-	// a discriminator field.
-	ExtensionParameterization *ParameterizationSpec `json:"extensionParameterization,omitempty" yaml:"extensionParameterization,omitempty"` //nolint:lll
 }
 
 // BaseProviderSpec is the serializable description of a Pulumi base provider.
@@ -2362,8 +2330,9 @@ type PackageSpec struct {
 	// Types is a map from type token to ComplexTypeSpec that describes the set of complex types (ie. object, enum)
 	// defined by this package.
 	Types map[string]ComplexTypeSpec `json:"types,omitempty" yaml:"types,omitempty"`
-	// Provider describes the provider type for this package.
-	Provider ResourceSpec `json:"provider,omitempty" yaml:"provider"`
+	// Provider describes the provider type for this package. Optional: extension
+	// parameterizations omit Provider.
+	Provider *ResourceSpec `json:"provider,omitempty" yaml:"provider,omitempty"`
 	// Resources is a map from type token to ResourceSpec that describes the set of resources defined by this package.
 	Resources map[string]ResourceSpec `json:"resources,omitempty" yaml:"resources,omitempty"`
 	// Functions is a map from token to FunctionSpec that describes the set of functions defined by this package.
@@ -2372,13 +2341,8 @@ type PackageSpec struct {
 	Dependencies []PackageDescriptor `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 
 	// Parameterization is the optional parameterization for this package.
+	// Replacement parameterizations set Provider; extension parameterizations leave it nil.
 	Parameterization *ParameterizationSpec `json:"parameterization,omitempty" yaml:"parameterization,omitempty"`
-
-	// ExtensionParameterization is the optional extension parameterization for this package.
-	// An extension parameterization extends the base plugin in place rather than replacing it;
-	// the presence of this field (vs Parameterization) signals the extension flavor without
-	// a discriminator field.
-	ExtensionParameterization *ParameterizationSpec `json:"extensionParameterization,omitempty" yaml:"extensionParameterization,omitempty"` //nolint:lll
 }
 
 func (p *PackageSpec) Info() PackageInfoSpec {
@@ -2390,18 +2354,17 @@ func (p *PackageSpec) Info() PackageInfoSpec {
 		Keywords:                  p.Keywords,
 		Homepage:                  p.Homepage,
 		License:                   p.License,
-		Attribution:               p.Attribution,
-		Repository:                p.Repository,
-		LogoURL:                   p.LogoURL,
-		PluginDownloadURL:         p.PluginDownloadURL,
-		Publisher:                 p.Publisher,
-		Namespace:                 p.Namespace,
-		Dependencies:              p.Dependencies,
-		Meta:                      p.Meta,
-		AllowedPackageNames:       p.AllowedPackageNames,
-		Language:                  p.Language,
-		Parameterization:          p.Parameterization,
-		ExtensionParameterization: p.ExtensionParameterization,
+		Attribution:         p.Attribution,
+		Repository:          p.Repository,
+		LogoURL:             p.LogoURL,
+		PluginDownloadURL:   p.PluginDownloadURL,
+		Publisher:           p.Publisher,
+		Namespace:           p.Namespace,
+		Dependencies:        p.Dependencies,
+		Meta:                p.Meta,
+		AllowedPackageNames: p.AllowedPackageNames,
+		Language:            p.Language,
+		Parameterization:    p.Parameterization,
 	}
 }
 

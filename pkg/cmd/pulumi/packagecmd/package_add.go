@@ -195,11 +195,11 @@ from the parameters, as in:
 
 			if target.projectFilePath != nil {
 				var specToAdd workspace.PackageSpec
-				if pkg.ExtensionParameterization != nil {
+				if pkg.Parameterization != nil && pkg.Provider == nil {
 					specToAdd = workspace.PackageSpec{
 						Base: &workspace.PackageSpec{
-							Source:  pkg.ExtensionParameterization.BaseProvider.Name,
-							Version: pkg.ExtensionParameterization.BaseProvider.Version.String(),
+							Source:  pkg.Parameterization.BaseProvider.Name,
+							Version: pkg.Parameterization.BaseProvider.Version.String(),
 						},
 						Extensions: parameters.Args,
 					}

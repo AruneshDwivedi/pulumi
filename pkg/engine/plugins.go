@@ -718,10 +718,6 @@ func describePluginSource(p workspace.PackageDescriptor) string {
 		return fmt.Sprintf("plugin %q%s parameterized as %q v%s",
 			p.Name, pluginVer, p.Parameterization.Name, p.Parameterization.Version.String())
 	}
-	if p.ExtensionParameterization != nil {
-		return fmt.Sprintf("plugin %q%s extended by %q v%s",
-			p.Name, pluginVer, p.ExtensionParameterization.Name, p.ExtensionParameterization.Version.String())
-	}
 	return fmt.Sprintf("plugin %q%s", p.Name, pluginVer)
 }
 
@@ -804,13 +800,6 @@ func computeDefaultProviderPackages(
 				"computeDefaultProviderPlugins(): skipping %s, not a resource provider", p)
 			continue
 		}
-		if p.ExtensionParameterization != nil {
-			// Extensions route via RegisterPackage's extension ref map, not default-provider lookup.
-			logging.V(preparePluginVerboseLog).Infof(
-				"computeDefaultProviderPlugins(): skipping %s, extension package", p)
-			continue
-		}
-
 		name := tokens.Package(p.PackageName())
 
 		if seenPlugin, has := defaultProviderPlugins[name]; has {

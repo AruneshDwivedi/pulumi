@@ -64,9 +64,6 @@ type PulumiParameterizationJSON struct {
 	Version string `json:"version"`
 	// The parameter value of the parameterized package.
 	Value []byte `json:"value"`
-	// Kind is the parameterization kind: "extension" extends the base plugin,
-	// empty replaces it.
-	Kind string `json:"kind,omitempty"`
 }
 
 // PulumiPluginJSON represents additional information about a package's associated Pulumi plugin.

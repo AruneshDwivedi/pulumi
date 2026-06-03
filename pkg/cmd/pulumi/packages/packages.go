@@ -86,7 +86,7 @@ func InstallPackage(stdout io.Writer, ws pkgWorkspace.Context, proj workspace.Ba
 	}
 
 	// Rename to the extension identity.
-	if pkg.ExtensionParameterization != nil && parameterizationName != "" {
+	if pkg.Parameterization != nil && pkg.Provider == nil && parameterizationName != "" {
 		pkg.Name = parameterizationName
 	}
 

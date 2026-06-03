@@ -30,7 +30,7 @@ func extensionSchemaSpec() schema.PackageSpec {
 	return schema.PackageSpec{
 		Name:    "gateway",
 		Version: "1.0.0",
-		ExtensionParameterization: &schema.ParameterizationSpec{
+		Parameterization: &schema.ParameterizationSpec{
 			BaseProvider: schema.BaseProviderSpec{Name: "kubernetes", Version: "4.0.0"},
 			Parameter:    []byte("extension-parameter"),
 		},
@@ -55,7 +55,8 @@ func TestExtensionParameterizationCodegen(t *testing.T) {
 	pkg, diags, err := schema.BindSpec(extensionSchemaSpec(), nil, schema.ValidationOptions{})
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), "%v", diags)
-	require.NotNil(t, pkg.ExtensionParameterization)
+	require.NotNil(t, pkg.Parameterization)
+	require.Nil(t, pkg.Provider)
 
 	files, err := GeneratePackage("test", pkg, nil, nil)
 	require.NoError(t, err)

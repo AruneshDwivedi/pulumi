@@ -272,7 +272,6 @@ func (h *langhost) GetRequiredPackages(
 			return nil, nil, fmt.Errorf("unrecognized plugin kind: %s", info.Kind)
 		}
 		var parameterization *workspace.Parameterization
-		var extensionParameterization *workspace.Parameterization
 		if info.Parameterization != nil {
 			sv, err := semver.ParseTolerant(info.Parameterization.Version)
 			if err != nil {
@@ -280,28 +279,17 @@ func (h *langhost) GetRequiredPackages(
 					"illegal semver returned by language host: %s@%s: %w",
 					info.GetName(), info.Parameterization.Version, err)
 			}
-
-			p := &workspace.Parameterization{
+			parameterization = &workspace.Parameterization{
 				Name:    info.Parameterization.Name,
 				Version: sv,
 				Value:   info.Parameterization.Value,
 			}
-
-			// The PackageParameterization proto still carries a "kind" discriminator
-			// to identify the extension flavor over the language-host RPC boundary.
-			// Translate it into one of the two PackageDescriptor fields here.
-			switch info.Parameterization.Kind {
-			case "":
-				parameterization = p
-			case "extension":
-				extensionParameterization = p
-			default:
-				return nil, fmt.Errorf(
-					"unknown parameterization kind %q returned by language host for %s",
-					info.Parameterization.Kind, info.GetName())
-			}
 		}
 
+		// The wire format no longer distinguishes replacement from extension
+		// parameterization; downstream code reads schema.Provider to know which.
+		// At this layer the descriptor stores the parameterization in Parameterization
+		// regardless of flavor; the engine reclassifies once the schema loads.
 		packageDescriptors = append(packageDescriptors, workspace.PackageDescriptor{
 			PluginDescriptor: workspace.PluginDescriptor{
 				Name:              info.Name,
@@ -310,8 +298,7 @@ func (h *langhost) GetRequiredPackages(
 				PluginDownloadURL: info.Server,
 				Checksums:         info.Checksums,
 			},
-			Parameterization:          parameterization,
-			ExtensionParameterization: extensionParameterization,
+			Parameterization: parameterization,
 		})
 	}
 
@@ -940,18 +927,11 @@ func (h *langhost) Link(
 		}
 
 		var parameterization *pulumirpc.PackageParameterization
-		if dep.Descriptor.Parameterization != nil {
+		if p := dep.Descriptor.Parameterization; p != nil {
 			parameterization = &pulumirpc.PackageParameterization{
-				Name:    dep.Descriptor.Parameterization.Name,
-				Version: dep.Descriptor.Parameterization.Version.String(),
-				Value:   dep.Descriptor.Parameterization.Value,
-			}
-		} else if dep.Descriptor.ExtensionParameterization != nil {
-			parameterization = &pulumirpc.PackageParameterization{
-				Name:    dep.Descriptor.ExtensionParameterization.Name,
-				Version: dep.Descriptor.ExtensionParameterization.Version.String(),
-				Value:   dep.Descriptor.ExtensionParameterization.Value,
-				Kind:    "extension",
+				Name:    p.Name,
+				Version: p.Version.String(),
+				Value:   p.Value,
 			}
 		}
 
