@@ -16,6 +16,7 @@ package lifecycletest
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/blang/semver"
@@ -805,4 +806,236 @@ func TestPclSnippetResourceReference(t *testing.T) {
 	require.Equal(t, resource.PropertyMap{
 		"message": resource.NewProperty("hello"),
 	}, res.Inputs)
+}
+
+// TestPclSnippetMissingProgramReference covers a snippet whose reference URN is registered by the main
+// program on one update but not on a subsequent update. The first run succeeds; the second run must error
+// out promptly with a "no source registered" message rather than hanging waiting on the broker.
+func TestPclSnippetMissingProgramReference(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "message": { "type": "string" }
+      },
+      "requiredInputs": ["message"]
+    },
+    "pkgA:index:Comp": {
+      "isComponent": true,
+      "inputProperties": {
+        "value": { "type": "string" }
+      },
+      "requiredInputs": ["value"],
+      "properties": {
+        "value": { "type": "string" }
+      },
+      "required": ["value"]
+    }
+  }
+}`
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: cr.Properties}, nil
+				},
+				ConstructF: func(
+					_ context.Context, req plugin.ConstructRequest, _ *deploytest.ResourceMonitor,
+				) (plugin.ConstructResponse, error) {
+					return plugin.ConstructResponse{
+						URN:     resource.URN("urn:pulumi:test::test::pkgA:index:Comp::comp"),
+						Outputs: resource.PropertyMap{"value": req.Inputs["value"]},
+					}, nil
+				},
+			}, nil
+		}),
+	}
+
+	// programRegistersComp lets the test toggle whether the language host registers the component the snippet
+	// depends on. Atomic so a hypothetical concurrent program execution would still observe a coherent value.
+	var programRegistersComp atomic.Bool
+	programRegistersComp.Store(true)
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		if !programRegistersComp.Load() {
+			return nil
+		}
+		_, err := monitor.RegisterResource("pkgA:index:Comp", "comp", false, deploytest.ResourceOptions{
+			Remote: true,
+			Inputs: resource.PropertyMap{"value": resource.NewProperty("hello")},
+		})
+		return err
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	snap.Snippets = []resource.Snippet{
+		{
+			Name: "test-resource", Type: "pkgA:index:res",
+			Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+			References: map[string]string{
+				"comp": "urn:pulumi:test::test::pkgA:index:Comp::comp",
+			},
+			Code: `message = comp.value`,
+		},
+	}
+
+	// First update: program registers comp; snippet succeeds.
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	var res *resource.State
+	for _, r := range snap.Resources {
+		if r.Type == "pkgA:index:res" {
+			res = r
+			break
+		}
+	}
+	require.NotNil(t, res, "snippet resource should have been created on the first run")
+	require.Equal(t, resource.PropertyMap{"message": resource.NewProperty("hello")}, res.Inputs)
+
+	// Second update: program no longer registers comp. The snippet's reference URN won't be satisfied; the
+	// broker watchdog should reap it and the update should fail with a clear error rather than hanging.
+	programRegistersComp.Store(false)
+	_, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.ErrorContains(t, err, "no source registered this URN")
+}
+
+// TestPclSnippetMissingSnippetReference covers a snippet whose reference URN is registered by another
+// snippet on one update but not on a subsequent update. The first run succeeds; the second run, with the
+// producing snippet removed from the snapshot, must error out with a "no source registered" message.
+func TestPclSnippetMissingSnippetReference(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON := `{
+  "version": "0.0.1",
+  "name": "pkgA",
+  "resources": {
+    "pkgA:index:res": {
+      "inputProperties": {
+        "message": { "type": "string" }
+      },
+      "requiredInputs": ["message"]
+    },
+    "pkgA:index:producer": {
+      "inputProperties": {
+        "seed": { "type": "string" }
+      },
+      "requiredInputs": ["seed"],
+      "properties": {
+        "value": { "type": "string" }
+      },
+      "required": ["value"]
+    }
+  }
+}`
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				GetSchemaF: func(_ context.Context, _ plugin.GetSchemaRequest) (plugin.GetSchemaResponse, error) {
+					return plugin.GetSchemaResponse{Schema: []byte(schemaJSON)}, nil
+				},
+				CreateF: func(_ context.Context, cr plugin.CreateRequest) (plugin.CreateResponse, error) {
+					out := resource.PropertyMap{}
+					for k, v := range cr.Properties {
+						out[k] = v
+					}
+					// Producer: synthesize a "value" output derived from the seed input so the consumer can
+					// observe it in its broker-resolved outputs.
+					if seed, ok := cr.Properties["seed"]; ok {
+						out["value"] = resource.NewProperty("value-of-" + seed.StringValue())
+					}
+					uuid, err := uuid.NewV4()
+					if err != nil {
+						return plugin.CreateResponse{}, err
+					}
+					id := uuid.String()
+					if cr.Preview {
+						id = ""
+					}
+					return plugin.CreateResponse{ID: resource.ID(id), Properties: out}, nil
+				},
+			}, nil
+		}),
+	}
+
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, _ *deploytest.ResourceMonitor) error {
+		return nil
+	})
+
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			SkipDisplayTests: true,
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, loaders...),
+		},
+	}
+
+	snap, err := lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	const producerURN = "urn:pulumi:test::test::pkgA:index:producer::producer"
+	producerSnippet := resource.Snippet{
+		Name: "producer", Type: "pkgA:index:producer",
+		Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+		Code:       `seed = "abc"`,
+	}
+	consumerSnippet := resource.Snippet{
+		Name: "consumer", Type: "pkgA:index:res",
+		Descriptor: resource.PackageDescriptor{Name: "pkgA"},
+		References: map[string]string{"producer": producerURN},
+		Code:       `message = producer.value`,
+	}
+
+	// First update: both snippets present. The consumer reads producer.value via the broker.
+	snap.Snippets = []resource.Snippet{producerSnippet, consumerSnippet}
+	snap, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "1")
+	require.NoError(t, err)
+
+	var consumer *resource.State
+	for _, r := range snap.Resources {
+		if r.URN.Name() == "consumer" {
+			consumer = r
+			break
+		}
+	}
+	require.NotNil(t, consumer, "consumer snippet resource should have been created on the first run")
+	require.Equal(t, resource.PropertyMap{"message": resource.NewProperty("value-of-abc")}, consumer.Inputs)
+
+	// Second update: drop the producer snippet but keep the consumer with its now-orphan reference. The
+	// broker watchdog should reject the unregistered URN and the consumer should fail with a clear error.
+	snap.Snippets = []resource.Snippet{consumerSnippet}
+	_, err = lt.TestOp(Update).RunStep(
+		p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient, nil, "2")
+	require.ErrorContains(t, err, "no source registered this URN")
 }

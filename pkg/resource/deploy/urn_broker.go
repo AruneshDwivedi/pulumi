@@ -31,15 +31,54 @@ import (
 //     blocks on it via Result(ctx).
 //   - The resource monitor calls Resolve(urn, outputs) after each successful registration. The
 //     first Resolve for a URN wins; subsequent calls are no-ops.
+//   - URNs that some still-running source intends to register are pre-declared via MarkExpected.
+//     When the engine knows no more registrations are coming from the program (and only Expected
+//     URNs might still arrive from snippets), it calls RejectUnresolved to surface "no source
+//     registered this URN" failures for any pending entry that wasn't pre-declared.
 type URNBroker struct {
 	mu       sync.Mutex
 	promises map[resource.URN]*promise.CompletionSource[resource.PropertyMap]
+	expected map[resource.URN]struct{}
+	// closedErr, if non-nil, indicates RejectUnresolved has been called: any subsequent Get for a URN that
+	// wasn't marked Expected returns an already-rejected promise. Without this flag a slow source that calls
+	// Get *after* the sweep would create a fresh pending entry that no one will ever resolve.
+	closedErr error
 }
 
 // NewURNBroker returns a broker with no pending or resolved entries.
 func NewURNBroker() *URNBroker {
 	return &URNBroker{
 		promises: map[resource.URN]*promise.CompletionSource[resource.PropertyMap]{},
+		expected: map[resource.URN]struct{}{},
+	}
+}
+
+// MarkExpected records that some still-running source intends to Resolve urn. Subsequent calls to
+// RejectUnresolved will leave Expected URNs alone (they're still in flight, not dead). Repeated calls
+// for the same URN are no-ops.
+func (b *URNBroker) MarkExpected(urn resource.URN) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.expected[urn] = struct{}{}
+}
+
+// RejectUnresolved rejects every currently-pending promise that has not been marked as Expected, and
+// causes any subsequent [URNBroker.Get] for a non-Expected URN to return an already-rejected promise.
+// Used once the engine knows no further registrations are coming from sources that didn't pre-declare
+// their URNs (typically called after the main program's promise resolves). Repeated calls are no-ops:
+// the first err is the one observed by Get callers.
+func (b *URNBroker) RejectUnresolved(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closedErr != nil {
+		return
+	}
+	b.closedErr = err
+	for urn, cs := range b.promises {
+		if _, ok := b.expected[urn]; ok {
+			continue
+		}
+		cs.Reject(err)
 	}
 }
 
@@ -56,10 +95,20 @@ func (b *URNBroker) entry(urn resource.URN) *promise.CompletionSource[resource.P
 // Get returns a promise that will be fulfilled with the outputs of the resource registered at the
 // given URN. Subsequent Gets for the same URN return the same promise. Safe to call from any
 // goroutine.
+//
+// If [URNBroker.RejectUnresolved] has already been called, a Get for a URN that has not been marked
+// Expected returns a promise that is already rejected — this closes a race where a slow source might
+// otherwise call Get after the sweep and sit forever on a freshly-created pending entry.
 func (b *URNBroker) Get(urn resource.URN) *promise.Promise[resource.PropertyMap] {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.entry(urn).Promise()
+	cs := b.entry(urn)
+	if b.closedErr != nil {
+		if _, ok := b.expected[urn]; !ok {
+			cs.Reject(b.closedErr)
+		}
+	}
+	return cs.Promise()
 }
 
 // Resolve fulfills the promise for the given URN with the supplied outputs. Repeated Resolve calls

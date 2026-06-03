@@ -136,6 +136,106 @@ func TestURNBroker_ConcurrentGetsAndResolves(t *testing.T) {
 	wg.Wait()
 }
 
+func TestURNBroker_RejectUnresolvedRejectsPendingNonExpected(t *testing.T) {
+	t.Parallel()
+	b := NewURNBroker()
+
+	pending := resource.URN("urn:pulumi:s::p::pkg:typ::pending")
+	expected := resource.URN("urn:pulumi:s::p::pkg:typ::expected")
+	resolved := resource.URN("urn:pulumi:s::p::pkg:typ::resolved")
+
+	pendingP := b.Get(pending)
+	expectedP := b.Get(expected)
+	b.MarkExpected(expected)
+
+	resolvedOutputs := resource.PropertyMap{"k": resource.NewProperty("v")}
+	b.Resolve(resolved, resolvedOutputs)
+	resolvedP := b.Get(resolved)
+
+	rejErr := errors.New("nobody registered this")
+	b.RejectUnresolved(rejErr)
+
+	// Pending non-Expected: rejected.
+	_, err := pendingP.Result(t.Context())
+	require.ErrorIs(t, err, rejErr)
+
+	// Expected: untouched.
+	if _, _, ok := expectedP.TryResult(); ok {
+		t.Fatal("Expected URN should not have been resolved or rejected by RejectUnresolved")
+	}
+
+	// Already resolved: untouched.
+	got, err := resolvedP.Result(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, resolvedOutputs, got)
+}
+
+func TestURNBroker_RejectUnresolvedIsIdempotent(t *testing.T) {
+	t.Parallel()
+	b := NewURNBroker()
+
+	urn := resource.URN("urn:pulumi:s::p::pkg:typ::a")
+	p := b.Get(urn)
+
+	first := errors.New("first rejection")
+	second := errors.New("second rejection")
+
+	b.RejectUnresolved(first)
+	b.RejectUnresolved(second)
+
+	_, err := p.Result(t.Context())
+	require.ErrorIs(t, err, first, "first rejection should win; second is a no-op")
+}
+
+func TestURNBroker_MarkExpectedAfterGetStillProtects(t *testing.T) {
+	t.Parallel()
+	b := NewURNBroker()
+
+	urn := resource.URN("urn:pulumi:s::p::pkg:typ::a")
+	p := b.Get(urn)
+	b.MarkExpected(urn)
+
+	b.RejectUnresolved(errors.New("sweep"))
+
+	// Still pending — MarkExpected after Get still protected the entry.
+	if _, _, ok := p.TryResult(); ok {
+		t.Fatal("Expected URN should not have been rejected")
+	}
+
+	// And a later Resolve should still work.
+	outputs := resource.PropertyMap{"k": resource.NewProperty("v")}
+	b.Resolve(urn, outputs)
+	got, err := p.Result(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, outputs, got)
+}
+
+// TestURNBroker_GetAfterRejectUnresolvedIsStickyRejected guards a race where a slow source calls Get
+// after the sweep. Without stickiness it would create a fresh pending entry and hang.
+func TestURNBroker_GetAfterRejectUnresolvedIsStickyRejected(t *testing.T) {
+	t.Parallel()
+	b := NewURNBroker()
+
+	expected := resource.URN("urn:pulumi:s::p::pkg:typ::expected")
+	other := resource.URN("urn:pulumi:s::p::pkg:typ::other")
+	b.MarkExpected(expected)
+
+	rejErr := errors.New("sweep")
+	b.RejectUnresolved(rejErr)
+
+	// A late Get for a non-Expected URN returns an already-rejected promise.
+	_, err := b.Get(other).Result(t.Context())
+	require.ErrorIs(t, err, rejErr)
+
+	// A late Get for an Expected URN is still allowed to wait; a subsequent Resolve still works.
+	expectedP := b.Get(expected)
+	outputs := resource.PropertyMap{"k": resource.NewProperty("v")}
+	b.Resolve(expected, outputs)
+	got, err := expectedP.Result(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, outputs, got)
+}
+
 // TestURNBroker_ResolveDoesNotBlock checks that Resolve does not block even if no one has Got the
 // URN yet; the resolved outputs should be observable by later Gets.
 func TestURNBroker_ResolveDoesNotBlock(t *testing.T) {

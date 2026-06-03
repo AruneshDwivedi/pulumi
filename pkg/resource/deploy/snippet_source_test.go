@@ -40,7 +40,7 @@ func TestMuxSource_AllSucceed(t *testing.T) {
 	aCS := &promise.CompletionSource[struct{}]{}
 	bCS := &promise.CompletionSource[struct{}]{}
 
-	mux := NewMuxSource(t.Context(), fakeSource(mainCS), fakeSource(aCS), fakeSource(bCS))
+	mux := NewMuxSource(t.Context(), nil, fakeSource(mainCS), fakeSource(aCS), fakeSource(bCS))
 	out := mux("ignored")
 
 	// Fulfill in arbitrary order.
@@ -58,7 +58,7 @@ func TestMuxSource_SingleErrorPropagatesAsIs(t *testing.T) {
 	mainCS := &promise.CompletionSource[struct{}]{}
 	aCS := &promise.CompletionSource[struct{}]{}
 
-	mux := NewMuxSource(t.Context(), fakeSource(mainCS), fakeSource(aCS))
+	mux := NewMuxSource(t.Context(), nil, fakeSource(mainCS), fakeSource(aCS))
 	out := mux("ignored")
 
 	bang := errors.New("snippet exploded")
@@ -76,7 +76,7 @@ func TestMuxSource_MultipleErrorsJoin(t *testing.T) {
 	aCS := &promise.CompletionSource[struct{}]{}
 	bCS := &promise.CompletionSource[struct{}]{}
 
-	mux := NewMuxSource(t.Context(), fakeSource(mainCS), fakeSource(aCS), fakeSource(bCS))
+	mux := NewMuxSource(t.Context(), nil, fakeSource(mainCS), fakeSource(aCS), fakeSource(bCS))
 	out := mux("ignored")
 
 	mainErr := errors.New("program failed")
@@ -99,7 +99,7 @@ func TestMuxSource_WaitsForAll(t *testing.T) {
 	mainCS := &promise.CompletionSource[struct{}]{}
 	aCS := &promise.CompletionSource[struct{}]{}
 
-	mux := NewMuxSource(t.Context(), fakeSource(mainCS), fakeSource(aCS))
+	mux := NewMuxSource(t.Context(), nil, fakeSource(mainCS), fakeSource(aCS))
 	out := mux("ignored")
 
 	mainCS.Fulfill(struct{}{})
@@ -124,7 +124,7 @@ func TestMuxSource_CancelContextStopsWaiting(t *testing.T) {
 	mainCS := &promise.CompletionSource[struct{}]{}
 	hangCS := &promise.CompletionSource[struct{}]{} // never resolved
 
-	mux := NewMuxSource(muxCtx, fakeSource(mainCS), fakeSource(hangCS))
+	mux := NewMuxSource(muxCtx, nil, fakeSource(mainCS), fakeSource(hangCS))
 	out := mux("ignored")
 
 	mainCS.Fulfill(struct{}{})
@@ -150,7 +150,7 @@ func TestMuxSource_NoBusyLoop(t *testing.T) {
 	t.Parallel()
 
 	mainCS := &promise.CompletionSource[struct{}]{}
-	mux := NewMuxSource(t.Context(), fakeSource(mainCS))
+	mux := NewMuxSource(t.Context(), nil, fakeSource(mainCS))
 	out := mux("ignored")
 
 	// Give the mux goroutine a window in which it would otherwise spin.

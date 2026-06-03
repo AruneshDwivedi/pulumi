@@ -941,12 +941,21 @@ func newUpdateSource(ctx context.Context,
 		// We need a loader for snippets
 		loader := schema.NewPluginLoader(plugctx.Host)
 
+		// Pre-compute the URN each snippet will register. The broker uses these to know which still-pending
+		// entries belong to in-flight snippets (and so must not be reaped) when the main program finishes.
+		stack := target.Name.Q()
+		snippetURNs := make([]resource.URN, len(target.Snapshot.Snippets))
+		for i, snippet := range target.Snapshot.Snippets {
+			snippetURNs[i] = resource.NewURN(stack, proj.Name, "" /*parentType*/, tokens.Type(snippet.Type), snippet.Name)
+			urnBroker.MarkExpected(snippetURNs[i])
+		}
+
 		snippetSources := make([]func(string) *promise.Promise[struct{}], len(target.Snapshot.Snippets))
 		for i, snippet := range target.Snapshot.Snippets {
 			snippetSources[i] = deploy.NewSnippetSource(
-				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd, urnBroker)
+				snippet, loader, runinfo.ProjectRoot, runinfo.Pwd, snippetURNs[i], urnBroker)
 		}
-		program = deploy.NewMuxSource(ctx, program, snippetSources...)
+		program = deploy.NewMuxSource(ctx, urnBroker, program, snippetSources...)
 	}
 
 	// If that succeeded, create a new source that will perform interpretation of the compiled program.
